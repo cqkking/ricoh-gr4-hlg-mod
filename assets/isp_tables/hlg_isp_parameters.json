@@ -1,0 +1,241 @@
+{
+  "ccm_float_rec709_to_rec2020": [
+    [
+      0.6274039,
+      0.329283,
+      0.0433131
+    ],
+    [
+      0.0690973,
+      0.9195404,
+      0.0113623
+    ],
+    [
+      0.0163914,
+      0.0880133,
+      0.8955953
+    ]
+  ],
+  "ccm_fixed_s3_8_scale256": [
+    [
+      161,
+      84,
+      11
+    ],
+    [
+      18,
+      235,
+      3
+    ],
+    [
+      4,
+      23,
+      229
+    ]
+  ],
+  "ccm_fixed_s3_10_scale1024": [
+    [
+      643,
+      337,
+      44
+    ],
+    [
+      71,
+      941,
+      12
+    ],
+    [
+      17,
+      90,
+      917
+    ]
+  ],
+  "lut_256_8bit_sample": [
+    0,
+    111,
+    152,
+    174,
+    189,
+    200,
+    209,
+    216,
+    222,
+    228,
+    233,
+    238,
+    242,
+    245,
+    249,
+    252,
+    255
+  ],
+  "lut_1024_10bit_sample": [
+    0,
+    443,
+    609,
+    697,
+    756,
+    800,
+    836,
+    866,
+    892,
+    914,
+    935,
+    953,
+    969,
+    984,
+    998,
+    1011,
+    1023
+  ],
+  "rtos_look_audit": {
+    "look_table_vaddr": "0x53dbf360",
+    "look_table_payload_offset": "0xdd7070",
+    "visibility_gate_vaddr": "0x533cc6e0",
+    "visibility_gate_payload_offset": "0x3e43f0",
+    "visibility_gate_words": [
+      "0xe3520000",
+      "0x1a000019",
+      "0xe241100b",
+      "0xe351000d"
+    ],
+    "entries": [
+      {
+        "index": 0,
+        "slot_hex": "0x00",
+        "ptr_vaddr": "0x65646f4d",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 1,
+        "slot_hex": "0x01",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 2,
+        "slot_hex": "0x02",
+        "ptr_vaddr": "0x00000100",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 3,
+        "slot_hex": "0x03",
+        "ptr_vaddr": "0x01010101",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 4,
+        "slot_hex": "0x04",
+        "ptr_vaddr": "0x00010101",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 5,
+        "slot_hex": "0x05",
+        "ptr_vaddr": "0x01010000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 6,
+        "slot_hex": "0x06",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 7,
+        "slot_hex": "0x07",
+        "ptr_vaddr": "0x00010100",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 8,
+        "slot_hex": "0x08",
+        "ptr_vaddr": "0x00010000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 9,
+        "slot_hex": "0x09",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 10,
+        "slot_hex": "0x0a",
+        "ptr_vaddr": "0x00000100",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 11,
+        "slot_hex": "0x0b",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 12,
+        "slot_hex": "0x0c",
+        "ptr_vaddr": "0x00000001",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 13,
+        "slot_hex": "0x0d",
+        "ptr_vaddr": "0x01000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 14,
+        "slot_hex": "0x0e",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 15,
+        "slot_hex": "0x0f",
+        "ptr_vaddr": "0x00010000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      },
+      {
+        "index": 16,
+        "slot_hex": "0x10",
+        "ptr_vaddr": "0x00000000",
+        "ptr_payload_offset": null,
+        "utf16_preview": "<non-pointer/terminator>",
+        "raw_hex": ""
+      }
+    ]
+  }
+}
