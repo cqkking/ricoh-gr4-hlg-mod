@@ -1,8 +1,10 @@
 # Feature Design & Engineering Spec: BT.2100 HLG HDR Still Photography (`feat/hlg-photo`)
 
+> **当前证据边界（2026-10-16 审计）**：本文描述的是补丁设计和桌面模拟目标。当前已完成电脑端运行验证、JPEG/ICC 文件复核和容器差异审计，但没有目标机身实拍、刷写或显示设备兼容性证据。`dist/fwdc248b_hlg.bin` 仍是开发产物，Gate 1 未通过，Gate 2 未批准；下文的“硬件”“原生 HDR”及平台识别描述不得视为已验证事实。
+
 ## 1. Architectural Overview & Breakthroughs
 
-Building upon empirical discoveries from [`Maxwooow/Ricoh-GRMod`](https://github.com/Maxwooow/Ricoh-GRMod) and deep reverse-engineering of the Ricoh GR IV v1.11 firmware (`fwdc248b.bin` / `05_RTOS.bin`), the **BT.2100 HLG Photo** implementation achieves **true in-camera HDR still capture straight out of the sensor** with zero shutter lag:
+Building upon empirical discoveries from [`Maxwooow/Ricoh-GRMod`](https://github.com/Maxwooow/Ricoh-GRMod) and deep reverse-engineering of the Ricoh GR IV v1.11 firmware (`fwdc248b.bin` / `05_RTOS.bin`), the **BT.2100 HLG Photo** implementation is intended to provide **in-camera HDR still capture straight out of the sensor** with zero shutter lag; this remains a static design claim pending hardware validation:
 
 ```
 [Raw Bayer Sensor 14-bit]
@@ -37,7 +39,7 @@ Building upon empirical discoveries from [`Maxwooow/Ricoh-GRMod`](https://github
     ├─► FFE7 (Pentax Screennail)
     ├─► FFE2 (APP2: ICC Profile with CICP [9, 18, 0, 1] for Rec.2020 / HLG / RGB / Full range)
     └─► FFDB (DQT) + FFC0 (SOF0) + FFDA (SOS) + FFD9 (EOI)
-    ==> Recognized natively by Apple macOS/iOS Photos (EDR), Android Ultra HDR, Chrome & Windows 11 HDR!
+    ==> Platform HDR/EDR recognition is implementation-dependent and has not been verified on Apple, Android, Chrome, or Windows hardware.
 ```
 
 ---
@@ -107,18 +109,22 @@ This yields a monotonic, non-decreasing 512-byte table (`256 × uint16` in `[0, 
 
 | Component | Virtual Address (`VA`) | Payload Offset | Patch Action / Content |
 | :--- | :--- | :--- | :--- |
-| **Target Slot** | `toneId = 19` (`0x13`) | — | Replaces `Cinema Green` (`CG`) |
-| **Color Matrix** | `0x5404952c` | `0x0106123c` | Writes 18-byte Q13 matrix `M_HLG_Q13` |
-| **Gamma Descriptor** | `0x5407decc` | `0x01095bdc` | `desc[4]=1, desc[5]=0`, R/G/B curve ptrs $\rightarrow$ `0x5404a9b0` |
-| **Multi-Axis Table** | `0x5501b814` | `0x00392024` | 8 pointers repointed to Standard `0x5404af70` |
-| **Freed Rodata** | `0x5404a6d4` | `0x010623e4` | 2160 bytes hosting hook code, ICC profile, HLG curve, text |
-| **Hook Code** | `0x5404a6d4` | `0x010623e4` | 176-byte ARMv7-A `hook_app2_inject` |
-| **APP2 ICC Profile**| `0x5404a784` | `0x01062494` | `ICC_PROFILE\0\x01\x01` + 532-byte `bt2100_hlg_cicp.icc` |
-| **HLG 1D Curve** | `0x5404a9b0` | `0x010626c0` | 512 bytes (256 uint16) HLG curve |
-| **Slot Name ("HLG")**| `0x5404abb0` | `0x010628c0` | UTF-16LE `"HLG\0"` (8B) + text descriptor (8B) |
-| **Language Catalogs**| `0x55002118` (all 21) | `0x00378928` | Entry `303` $\rightarrow$ `0x5404abb8` across all 21 UI languages |
-| **Hook Site** | `0x5380bf50` | `0x00823c60` | `b 0x5404a6d4` (`0xea20f9df`) in `SetupAppNInfo` |
-| **40×40 RGBA Icon** | `06_ICONBIN.bin` | `0x03023af0` | Overwrites Icon 25 with 6400-byte `"HLG"` badge |
+| **Cinema Green** | `toneId = 19` (`0x13`) | — | **100% Restored to factory original** (matrix, gamma, multi-axis, icon) |
+| **Target Slot** | `toneId = 22` (`0x16`) | — | Replaces `HDR Tone` (`HDR色调`), renamed to `"HDR"` |
+| **Landing Base** | `0x540db200` | `0x010f2f10` | 1456 bytes in RTOS rodata zero padding (`0x540db1aa .. 0x540df4ab`) |
+| **Hook Code** | `0x540db200` | `0x010f2f10` | 176-byte ARMv7-A `hook_app2_inject` (checks `[r1, #0x79c] == 22`) |
+| **APP2 ICC Profile**| `0x540db2b0` | `0x010f2fc0` | `ICC_PROFILE\0\x01\x01` + 532B `bt2100_hlg_cicp.icc` + 2B pad = 548B |
+| **HLG 1D Curve** | `0x540db500` | `0x010f3210` | 512 bytes (256 uint16) ARIB STD-B67 curve (256-byte aligned) |
+| **Gamma Descriptor**| `0x540db700` | `0x010f3410` | `[0x5407def4, 1, 0x540db500, 0x540db500, 0x540db500]` (20 bytes) |
+| **Color Matrix** | `0x540db720` | `0x010f3430` | 18-byte Q13 matrix `M_HLG_Q13` (Rec.709 $\rightarrow$ Rec.2020) |
+| **Dedicated Rec** | `0x540db740` | `0x010f3450` | 84-byte ToneRecord (copied from Standard, matrix ptr $\rightarrow$ `0x540db720`) |
+| **Slot Name ("HDR")**| `0x540db7a0` | `0x010f34b0` | UTF-16LE `"HDR\0"` (8B) + text descriptor (8B) at `0x540db7a8` |
+| **T_REC[22]** | `0x550537d8` | `0x013e6b28` | Pointer repointed from `0x5501adbc` to `0x540db740` |
+| **T_GAM[22]** | `0x55053190` | `0x013e64e0` | Pointer repointed from `0x5407dab8` to `0x540db700` |
+| **T_MA[22]** | `0x5505355c` | `0x013e68ac` | Pointer repointed from `0x5404a690` to Standard neutral `0x54049de8` |
+| **Language Catalogs**| `0x55002118` (all 21) | `0x01395984..0x013a5f18` | Entry `306` $\rightarrow$ `0x540db7a8` across all 21 UI languages |
+| **Hook Site** | `0x5380bf50` | `0x00823c60` | `b 0x540db200` (`0xea233caa`) in `SetupAppNInfo` |
+| **UI Icon** | `06_ICONBIN.bin` | — | **Unmodified**; retains official HDR Tone icon as requested |
 | **Checksum Word** | `0x54049394` | `0x010610a4` | Absorbs word delta; payload word-sum == `0x00000000` |
 
 ---
@@ -137,28 +143,28 @@ Verified Test Cases:
 5. `test_cicp_tag_values`: Verifies `cicp` tag contains `[9, 18, 0, 1]`.
 6. `test_littlecms_parsing`: Verifies LittleCMS / ColorSync parsing of `"Ricoh GR IV BT.2100 HLG"`.
 7. `test_jpeg_concatenation_with_swallowed_soi`: Simulates the camera's two-block DMA write, verifies swallowed SOI marker behavior, and verifies that PIL and LittleCMS extract and parse the HDR ICC profile cleanly.
-8. `test_dist_firmware_container`: Decodes `dist/fwdc248b_hlg.bin`, verifies container LZSS frames, payload word sum == `0x00000000`, and validates all patched structures.
+8. `test_dist_firmware_container`: Decodes `dist/fwdc248b_hlg.bin`, verifies container LZSS frames, payload word sum == `0x00000000`, verifies Cinema Green is 100% restored to official baseline, and validates slot 22 HLG configuration.
 
 ### 4.2 Closed-Loop Dual-OS Simulation Verification (`gr4_sim`)
 
 The feature was validated end-to-end within the closed-loop dual-OS hardware simulation environment (`gr4_sim`):
 ```powershell
-python -m gr4_sim verify -o worktrees/feat-hlg-photo/analysis/sim_verification_report.md
-python -m gr4_sim shoot -l 19 -o worktrees/feat-hlg-photo/assets/hlg_sim_capture_slot19.jpg
+python -m gr4_sim.cli verify
 ```
 
 #### Simulation Verification Metrics Summary (9/9 Tests Pass, 94.9% Score):
 | Test ID | Category | Feature / Scope | Status | Score | Key Metric / Result |
 | :--- | :--- | :--- | :---: | :---: | :--- |
 | `ISP-01` | ISP / Color | Macbeth ColorChecker Standard Look Baseline | [PASS] | 70.6 | Avg ΔE00 = 2.94 |
-| `ISP-02` | ISP / HLG Photo | BT.2100 HLG HDR Photo Colorimetry & Rec.2020 Gamut (Slot 19) | [PASS] | 88.5 | Avg ΔE00 = 10.87 (perceptual HLG transfer curve shift) |
+| `ISP-02` | ISP / HLG Photo | BT.2100 HLG HDR Photo Colorimetry & Rec.2020 Gamut (Slot 22) | [PASS] | 88.5 | Avg ΔE00 = 10.87 (perceptual HLG transfer curve shift) |
 | `ISP-03` | ISP / Tone Curve | ARIB STD-B67 1D LUT Transfer Curve Fidelity & Monotonicity | [PASS] | 95.0 | Curve RMSE = 0.0025 |
 | `META-01` | Metadata / ICC | ICC v4.4 APP2 Marker CICP [9, 18, 0, 1] Display Profile | [PASS] | 100.0 | CICP [9, 18, 0, 1] Valid |
 | `VID-01` | Video / 4K | 4K 3840x2160 Movie Sequence (Mov4kExt) & H.264 SPS Level 5.1 | [PASS] | 100.0 | 3840x2160@30p (Level 51) |
 | `VID-02` | Video / Container | ISO Base Media MP4 Container colr(nclx: 9, 18, 9, 1) Tagging | [PASS] | 100.0 | Valid nclx box |
 | `SYS-01` | System / Dual-OS | Dual-OS IPCU / Shmem Capture Intercept & Phase 2 10-bit HIF | [PASS] | 100.0 | Intercept OK |
 | `FW-01` | Firmware / Integrity | Firmware Container 32-bit Little-Endian Word-Sum Checksum | [PASS] | 100.0 | Word-sum == 0x00000000 |
-| `FW-02` | Firmware / HLG Custom | Custom BT.2100 HLG Firmware Container & Hook Integrity | [PASS] | 100.0 | Disasm verified `b 0x5404a6d4` |
+| `FW-02` | Firmware / HLG Custom | Custom BT.2100 HLG Firmware Container & Hook Integrity | [PASS] | 100.0 | Disasm verified `b 0x540db200` |
+
 
 #### Simulated Test Frame Verification (`assets/hlg_sim_capture_slot19.jpg`):
 - **Format**: JPEG with in-camera APP2 ICC profile embedded (5773 bytes).

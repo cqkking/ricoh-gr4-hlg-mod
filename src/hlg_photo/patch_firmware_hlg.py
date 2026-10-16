@@ -3,21 +3,25 @@
 
 Applies the verified empirical ISP calibration and in-camera APP2 ICC injection hook
 to the Ricoh GR IV Standard Edition (China Mainland sales version) v1.11 firmware:
-  1. In-Place Slot Transformation (Target: Cinema Green, toneId = 0x13 = 19):
-     - Q13 Color Matrix (rec->matrix = 0x5404952c): Linear Rec.709 -> Rec.2020 @ M_STD
-     - Gamma Descriptor (gam = 0x5407decc): desc[5] = 0 (bypasses Cinema toning override)
-     - 14-bit Tone Curve (0x5404a9b0): 256 uint16 entries ARIB STD-B67 HLG with S^-1 pre-compensation
-     - Multi-Axis Table (ma_arr = 0x5501b814): 8 pointers repointed to Standard's neutral maBlock (0x5404af70)
-     - UI Name (Text ID 303 across all 21 languages): renamed to "HLG"
-     - UI Icon (Icon ID 25 in 06_ICONBIN.bin at payload 0x03023af0): updated to 40x40 RGBA "HLG" badge
-  2. In-Camera Automatic APP2 CICP ICC Profile Injection:
-     - Hooks ExifJpegWriter::SetupAppNInfo at 0x5380bf50 (branching to 0x5404a6d4)
+  1. Cinema Green (toneId = 19 = 0x13) is 100% restored to factory original.
+  2. Slot Transformation (Target: HDR Tone / HDR色调, toneId = 0x16 = 22):
+     - Q13 Color Matrix in dedicated ToneRecord at HLG_REC_VA: Linear Rec.709 -> Rec.2020 @ M_STD
+     - Gamma Descriptor at HLG_GAM_DESC_VA: desc[4]=1, desc[5]=0, 14-bit ARIB STD-B67 HLG curve
+     - Neutral Multi-Axis Table: T_MA[22] repointed to Standard neutral table (0x54049de8)
+     - UI Name (Text ID 306 across all 21 languages): renamed from "HDR色调"/"HDR Tone" to "HDR"
+     - UI Icon: retains official HDR Tone icon (0 changes to ICONBIN)
+  3. Safe Landing Region (0x540db200 in RTOS rodata zero padding):
+     - Houses ARM hook code, APP2 ICC payload, 14-bit HLG LUT, gamma descriptor,
+       Q13 CCM, dedicated ToneRecord struct, and "HDR" UTF-16LE text descriptor.
+  4. In-Camera Automatic APP2 CICP ICC Profile Injection:
+     - Hooks ExifJpegWriter::SetupAppNInfo at 0x5380bf50 (branching to 0x540db200)
+     - Checks [r1, #0x79c] == 22 (HDR mode)
      - Fixes APP7 length in m_workArea to terminate cleanly at [r4, #0x50]
      - Appends 32-byte aligned APP2 ICC_PROFILE segment (FF E2, len=576, BT.2100 HLG CICP [9, 18, 0, 1])
      - Advances [r4, #0x50] by 576 bytes so every .JPG shot in HLG mode is an HDR HLG photo straight out of camera!
-  3. Word-Sum Checksum Compensation:
+  5. Word-Sum Checksum Compensation:
      - Absorbs word delta at COMP_VA = 0x54049394 (payload 0x10610a4) so payload word-sum == 0.
-  4. Packaging:
+  6. Packaging:
      - Encodes patched payload into production-ready, flashable fwdc248b.bin container.
 """
 import argparse
@@ -58,35 +62,36 @@ RAM_VA = 0x55000000
 RAM_LEN = 0x57480
 RAM_IMG_VA = 0x5437B640
 
-# Target slot: Cinema Green (toneId = 19 = 0x13)
-TARGET_TONE_ID = 19
-TARGET_TEXT_ID = 303
-TARGET_ICON_ID = 25
+# Target slot: HDR Tone (toneId = 22 = 0x16, Text ID = 306)
+TARGET_TONE_ID = 22
+TARGET_TEXT_ID = 306
 
 # Offsets and addresses in GR IV v1.11
 COMP_VA = 0x54049394
 COMP_PAYLOAD_OFF = RTOS_PAYLOAD_OFFSET + (COMP_VA - RTOS_BASE)  # 0x10610a4
 
-# Freed rodata block from CG's unused maBlock
-FREED_RODATA_VA = 0x5404A6D4
-FREED_RODATA_LEN = 0x870  # 2160 bytes
+# Landing block inside RTOS rodata zero padding (0x540db1aa .. 0x540df4ab)
+LANDING_BASE_VA = 0x540DB200
+HOOK_CODE_VA    = 0x540DB200  # 176 bytes (0xB0)
+APP2_PAYLOAD_VA = 0x540DB2B0  # 14B header + 532B ICC + 2B pad = 548B (0x224)
+HLG_CURVE_VA    = 0x540DB500  # 512 bytes (256-byte aligned)
+HLG_GAM_DESC_VA = 0x540DB700  # 20 bytes (0x14)
+HLG_MATRIX_VA   = 0x540DB720  # 18 bytes (0x12)
+HLG_REC_VA      = 0x540DB740  # 84 bytes (0x54)
+HLG_TEXT_VA     = 0x540DB7A0  # 8 bytes: UTF-16LE "HDR\0"
+HLG_TEXT_DESC_VA= 0x540DB7A8  # 8 bytes: text descriptor struct
+LANDING_END_VA  = 0x540DB7B0
+LANDING_LEN     = LANDING_END_VA - LANDING_BASE_VA  # 1456 bytes (0x5B0)
 
-# Sub-allocations inside FREED_RODATA_VA
-HOOK_CODE_VA = FREED_RODATA_VA               # 0x5404a6d4 (176 bytes)
-APP2_PAYLOAD_VA = FREED_RODATA_VA + 0xB0     # 0x5404a784 (14B header + 2B pad + 532B ICC = 548B)
-HLG_CURVE_VA = FREED_RODATA_VA + 0x2DC       # 0x5404a9b0 (512 bytes, 16-byte aligned)
-HLG_TEXT_VA = FREED_RODATA_VA + 0x4DC        # 0x5404abb0 (8B UTF-16LE + 8B descriptor = 16B)
-
-# Standard neutral pointers
-STD_MA_BLOCK_VA = 0x5404AF70
-CG_MA_ARRAY_VA = 0x5501B814
-CG_MATRIX_VA = 0x5404952C
-CG_GAM_DESC_VA = 0x5407DECC
+# Style tables in RAM/ROM
+T_REC_BASE = 0x55053780
+T_GAM_BASE = 0x55053138
+T_MA_BASE  = 0x55053504
+STD_REC_VA = 0x5501ADBC
+STD_MA_DESC_VA = 0x54049DE8
 NATIVE_TEXT_ROOTS = 0x55002118
-ICONBIN_START = 0x02E93AF0
-ICON_25_PAYLOAD_OFF = ICONBIN_START + 0x190000  # 0x03023af0 (6400 bytes)
-
 HOOK_SITE_VA = 0x5380BF50
+
 
 
 def foff(va: int) -> int:
@@ -183,83 +188,98 @@ def patch_payload(payload_bytes: bytes, target_tone_id: int = TARGET_TONE_ID) ->
     # 1. Load generated assets
     tables_dir = WORKTREE_ROOT / "assets" / "isp_tables"
     icc_dir = WORKTREE_ROOT / "assets" / "icc"
-    icon_dir = WORKTREE_ROOT / "assets" / "icons"
 
     matrix_bytes = (tables_dir / "ccm_rec709_to_rec2020_q13.bin").read_bytes()
     curve_bytes = (tables_dir / "arib_std_b67_hlg_256x14bit.bin").read_bytes()
     icc_bytes = (icc_dir / "bt2100_hlg_cicp.icc").read_bytes()
-    icon_bytes = (icon_dir / "hlg_slot_icon_40x40.bin").read_bytes()
 
     assert len(matrix_bytes) == 18, f"Invalid matrix size: {len(matrix_bytes)}"
     assert len(curve_bytes) == 512, f"Invalid curve size: {len(curve_bytes)}"
     assert len(icc_bytes) == 532, f"Invalid ICC size: {len(icc_bytes)}"
-    assert len(icon_bytes) == 6400, f"Invalid icon size: {len(icon_bytes)}"
 
-    # 2. Patch Q13 Color Matrix at CG_MATRIX_VA
-    mat_off = foff(CG_MATRIX_VA)
-    p[mat_off : mat_off + 18] = matrix_bytes
+    # 2. Populate Landing Block in RTOS rodata zero-padding (0x540db200)
+    landing_off = foff(LANDING_BASE_VA)
+    landing_buf = bytearray(LANDING_LEN)
 
-    # 3. Patch Gamma Descriptor at CG_GAM_DESC_VA
-    # desc[4]=1, desc[5]=0 (bypasses Cinema toning override so HLG curve applies directly)
-    # desc[8..11] = R curve, desc[12..15] = G curve, desc[16..19] = B curve
-    gam_off = foff(CG_GAM_DESC_VA)
-    p[gam_off + 4] = 1
-    p[gam_off + 5] = 0
-    struct.pack_into("<III", p, gam_off + 8, HLG_CURVE_VA, HLG_CURVE_VA, HLG_CURVE_VA)
-
-    # 4. Patch Multi-Axis Array at CG_MA_ARRAY_VA
-    # Repoint all 8 multi-axis block pointers to Standard's neutral maBlock (0x5404af70)
-    ma_off = foff(CG_MA_ARRAY_VA)
-    for i in range(8):
-        struct.pack_into("<I", p, ma_off + i * 4, STD_MA_BLOCK_VA)
-
-    # 5. Populate Freed Rodata at FREED_RODATA_VA (0x5404a6d4)
-    # Clear entire 0x870 bytes first
-    rodata_off = foff(FREED_RODATA_VA)
-    p[rodata_off : rodata_off + FREED_RODATA_LEN] = b"\x00" * FREED_RODATA_LEN
-
-    # 5a. Assemble and place APP2 injection hook code
+    # 2a. Assemble and place APP2 injection hook code
     hook_code = assemble_hook(target_tone_id)
     assert len(hook_code) <= (APP2_PAYLOAD_VA - HOOK_CODE_VA), f"Hook code too large: {len(hook_code)}"
-    p[rodata_off : rodata_off + len(hook_code)] = hook_code
+    landing_buf[0 : len(hook_code)] = hook_code
 
-    # 5b. Place APP2 header and ICC profile at APP2_PAYLOAD_VA
+    # 2b. Place APP2 header and ICC profile at APP2_PAYLOAD_VA
     # Correct layout: exactly 14 bytes header, followed immediately by 532 bytes ICC, then 2 bytes trailing zero pad
     app2_hdr = b"ICC_PROFILE\x00\x01\x01"  # Exactly 14 bytes (NO PADDING BETWEEN HEADER AND ICC!)
     app2_data = app2_hdr + icc_bytes + b"\x00\x00"  # 14 + 532 + 2 = 548 bytes (137 words)
     assert len(app2_data) == 548
-    app2_off = foff(APP2_PAYLOAD_VA)
-    p[app2_off : app2_off + len(app2_data)] = app2_data
+    app2_in_buf = APP2_PAYLOAD_VA - LANDING_BASE_VA
+    landing_buf[app2_in_buf : app2_in_buf + len(app2_data)] = app2_data
 
-    # 5c. Place 256-point 14-bit HLG Tone Curve at HLG_CURVE_VA
-    curve_off = foff(HLG_CURVE_VA)
-    p[curve_off : curve_off + len(curve_bytes)] = curve_bytes
+    # 2c. Place 256-point 14-bit HLG Tone Curve at HLG_CURVE_VA
+    curve_in_buf = HLG_CURVE_VA - LANDING_BASE_VA
+    landing_buf[curve_in_buf : curve_in_buf + len(curve_bytes)] = curve_bytes
 
-    # 5d. Place UTF-16LE "HLG" string and text descriptor at HLG_TEXT_VA
-    hlg_str = "HLG\x00".encode("utf-16-le")  # 8 bytes
-    hlg_text_desc = struct.pack("<BBHI", len("HLG") + 1, 1, 0, HLG_TEXT_VA)  # 8 bytes
-    text_off = foff(HLG_TEXT_VA)
-    p[text_off : text_off + 8] = hlg_str
-    p[text_off + 8 : text_off + 16] = hlg_text_desc
+    # 2d. Place HLG Gamma Descriptor at HLG_GAM_DESC_VA
+    gam_in_buf = HLG_GAM_DESC_VA - LANDING_BASE_VA
+    struct.pack_into(
+        "<IIIII",
+        landing_buf,
+        gam_in_buf,
+        0x5407DEF4,
+        0x00000001,
+        HLG_CURVE_VA,
+        HLG_CURVE_VA,
+        HLG_CURVE_VA,
+    )
 
-    # 6. Hook ExifJpegWriter::SetupAppNInfo at HOOK_SITE_VA (0x5380bf50)
+    # 2e. Place Q13 Rec.2020 Color Matrix at HLG_MATRIX_VA
+    mat_in_buf = HLG_MATRIX_VA - LANDING_BASE_VA
+    landing_buf[mat_in_buf : mat_in_buf + len(matrix_bytes)] = matrix_bytes
+
+    # 2f. Place Dedicated ToneRecord at HLG_REC_VA
+    # Copy official Standard record (84 bytes) and repoint matrix pointer at +4
+    std_rec_off = foff(STD_REC_VA)
+    rec_bytes = bytearray(p[std_rec_off : std_rec_off + 84])
+    struct.pack_into("<I", rec_bytes, 4, HLG_MATRIX_VA)
+    rec_in_buf = HLG_REC_VA - LANDING_BASE_VA
+    landing_buf[rec_in_buf : rec_in_buf + 84] = rec_bytes
+
+    # 2g. Place UTF-16LE "HDR" string and text descriptor at HLG_TEXT_VA
+    hdr_str = "HDR\x00".encode("utf-16-le")  # 8 bytes
+    hdr_text_desc = struct.pack("<BBHI", len("HDR") + 1, 1, 0, HLG_TEXT_VA)  # 8 bytes
+    text_in_buf = HLG_TEXT_VA - LANDING_BASE_VA
+    desc_in_buf = HLG_TEXT_DESC_VA - LANDING_BASE_VA
+    landing_buf[text_in_buf : text_in_buf + len(hdr_str)] = hdr_str
+    landing_buf[desc_in_buf : desc_in_buf + len(hdr_text_desc)] = hdr_text_desc
+
+    # Write entire landing block into payload
+    p[landing_off : landing_off + LANDING_LEN] = landing_buf
+
+    # 3. Hook ExifJpegWriter::SetupAppNInfo at HOOK_SITE_VA (0x5380bf50)
     # Replace sub sp, fp, #0x14 with b HOOK_CODE_VA
     disp = (HOOK_CODE_VA - (HOOK_SITE_VA + 8)) >> 2
     hook_insn = 0xEA000000 | (disp & 0x00FFFFFF)
     hook_site_off = foff(HOOK_SITE_VA)
     struct.pack_into("<I", p, hook_site_off, hook_insn)
 
-    # 7. Update Text Catalog across all 21 languages to name slot "HLG"
-    desc_va = HLG_TEXT_VA + 8
+    # 4. Repoint T_REC[target_tone_id] to HLG_REC_VA
+    t_rec_off = foff(T_REC_BASE + target_tone_id * 4)
+    struct.pack_into("<I", p, t_rec_off, HLG_REC_VA)
+
+    # 5. Repoint T_GAM[target_tone_id] to HLG_GAM_DESC_VA
+    t_gam_off = foff(T_GAM_BASE + target_tone_id * 4)
+    struct.pack_into("<I", p, t_gam_off, HLG_GAM_DESC_VA)
+
+    # 6. Repoint T_MA[target_tone_id] to Standard neutral multi-axis table (STD_MA_DESC_VA)
+    t_ma_off = foff(T_MA_BASE + target_tone_id * 4)
+    struct.pack_into("<I", p, t_ma_off, STD_MA_DESC_VA)
+
+    # 7. Update Text Catalog across all 21 languages to name slot "HDR"
     for lang_idx in range(21):
         row_va = struct.unpack_from("<I", p, foff(NATIVE_TEXT_ROOTS + lang_idx * 4))[0]
         entry_off = foff(row_va + TARGET_TEXT_ID * 4)
-        struct.pack_into("<I", p, entry_off, desc_va)
+        struct.pack_into("<I", p, entry_off, HLG_TEXT_DESC_VA)
 
-    # 8. Update Icon 25 in 06_ICONBIN.bin with 40x40 RGBA "HLG" badge
-    p[ICON_25_PAYLOAD_OFF : ICON_25_PAYLOAD_OFF + len(icon_bytes)] = icon_bytes
-
-    # 9. Dual 32-bit Word Sum Checksum Compensation
+    # 8. Dual 32-bit Word Sum Checksum Compensation
     # Checksum word is at COMP_PAYLOAD_OFF (0x10610a4)
     # Target: sum of all 32-bit little-endian words in payload must be 0
     cur_sum = word_sum(bytes(p))

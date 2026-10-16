@@ -20,10 +20,6 @@
     {
       "path": "assets/icc/bt2100_hlg_cicp.icc",
       "sha256": "f741adf2e4945bd1fbd2513e40937a3ff541b3e3c9cd53e498d22611c26e403c"
-    },
-    {
-      "path": "assets/icons/hlg_slot_icon_40x40.bin",
-      "sha256": "e64f5bbd971d25c4e822300a8a31e48fbc71effe7b1639eacce94c6d4dc4ab2d"
     }
   ],
   "operations": [
@@ -34,248 +30,238 @@
       "payload_offset": "0x823c60",
       "runtime_address": "0x5380bf50",
       "expected_hex": "14d04be2",
-      "replacement_hex": "dff920ea",
+      "replacement_hex": "aa3c23ea",
       "reason": "Redirect ExifJpegWriter::SetupAppNInfo to the HLG APP2 hook."
     },
     {
-      "id": "rec2020_matrix",
+      "id": "t_rec_22",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x106123c",
-      "runtime_address": "0x5404952c",
-      "expected_hex": "a015a009c000c0006019e005c0ff40080018",
-      "replacement_hex": "aa15d10a85ff2703cd1d0cfff7ff6b049e1b",
-      "reason": "Replace Cinema Green Q13 matrix with Rec.2020 HLG matrix."
+      "payload_offset": "0x13e6b28",
+      "runtime_address": "0x550537d8",
+      "expected_hex": "bcad0155",
+      "replacement_hex": "40b70d54",
+      "reason": "Repoint T_REC[22] to dedicated HLG ToneRecord struct."
     },
     {
-      "id": "hlg_gamma_descriptor",
+      "id": "t_gam_22",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x1095be0",
-      "runtime_address": "0x5407ded0",
-      "expected_hex": "01010000b4f60754b4ee0754b8d60754",
-      "replacement_hex": "01000000b0a90454b0a90454b0a90454",
-      "reason": "Enable the HLG curve and point RGB channels at the embedded LUT."
+      "payload_offset": "0x13e64e0",
+      "runtime_address": "0x55053190",
+      "expected_hex": "b8da0754",
+      "replacement_hex": "00b70d54",
+      "reason": "Repoint T_GAM[22] to dedicated HLG Gamma Descriptor."
     },
     {
-      "id": "multi_axis_pointers",
+      "id": "t_ma_22",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13aeb64",
-      "runtime_address": "0x5501b814",
-      "expected_hex": "d4a60454d4a60454d4a60454d4a60454d4a60454d4a60454d4a60454d4a60454",
-      "replacement_hex": "70af045470af045470af045470af045470af045470af045470af045470af0454",
-      "reason": "Repoint Cinema Green multi-axis entries to the Standard neutral block."
+      "payload_offset": "0x13e68ac",
+      "runtime_address": "0x5505355c",
+      "expected_hex": "90a60454",
+      "replacement_hex": "e89d0454",
+      "reason": "Repoint T_MA[22] to Standard neutral multi-axis table."
     },
     {
-      "id": "freed_rodata_payload",
+      "id": "hlg_landing_block",
       "kind": "replace_blob",
       "partition": "RTOS",
-      "payload_offset": "0x10623e4",
-      "runtime_address": "0x5404a6d4",
-      "length": 2160,
-      "expected_sha256": "6add460af717cc99893cfd936d14d238f04c8c4a982d7f3900fed77c16175fb0",
-      "replacement_sha256": "04cf0c427fad6b739c10ad5dd9d87cbd2a3fdafb20e9484ad8e2c44a45c67c71",
-      "reason": "Embed ARM hook, APP2 ICC payload, HLG LUT and slot label in the reclaimed block."
+      "payload_offset": "0x10f2f10",
+      "runtime_address": "0x540db200",
+      "length": 1456,
+      "expected_sha256": "f42ac9f0d388a01081157fa77ee261a09b07c7b8284187e7d1fd477880b92c45",
+      "replacement_sha256": "495639338671a30c988c0444e000a98ad3067b8346d90c9f90cbde5749a6c5a5",
+      "reason": "Embed ARM hook, APP2 ICC payload, HLG LUT, gamma descriptor, matrix, rec struct, and 'HDR' UI label in zero-padding rodata."
     },
     {
       "id": "language_catalog_00",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139cf2c",
-      "expected_hex": "9833e353",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 0 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139cf38",
+      "expected_hex": "5049e353",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 0 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_01",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13973a0",
-      "expected_hex": "a0f5de53",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 1 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13973ac",
+      "expected_hex": "68c9de53",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 1 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_02",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x1398dc8",
-      "expected_hex": "187de053",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 2 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x1398dd4",
+      "expected_hex": "300ae053",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 2 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_03",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x1399adc",
-      "expected_hex": "d0d5e053",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 3 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x1399ae8",
+      "expected_hex": "7800e153",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 3 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_04",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a2ab8",
-      "expected_hex": "44d4e653",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 4 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a2ac4",
+      "expected_hex": "ac34e753",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 4 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_05",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a037c",
-      "expected_hex": "282fe553",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 5 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a0388",
+      "expected_hex": "6499e553",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 5 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_06",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139c218",
-      "expected_hex": "a4f2e253",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 6 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139c224",
+      "expected_hex": "a410e353",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 6 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_07",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139e954",
-      "expected_hex": "1c5fe453",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 7 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139e960",
+      "expected_hex": "7cf8e353",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 7 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_08",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139668c",
-      "expected_hex": "dc19de53",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 8 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x1396698",
+      "expected_hex": "240fde53",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 8 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_09",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a37cc",
-      "expected_hex": "ecdbe753",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 9 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a37d8",
+      "expected_hex": "4c72e753",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 9 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_10",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13980b4",
-      "expected_hex": "14cfdf53",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 10 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13980c0",
+      "expected_hex": "3850df53",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 10 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_11",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139f668",
-      "expected_hex": "b074e453",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 11 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139f674",
+      "expected_hex": "ac93e453",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 11 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_12",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x1395978",
-      "expected_hex": "bcebdd53",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 12 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x1395984",
+      "expected_hex": "e49fdd53",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 12 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_13",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139b504",
-      "expected_hex": "70fee153",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 13 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139b510",
+      "expected_hex": "e44be253",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 13 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_14",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a5f08",
-      "expected_hex": "9817e953",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 14 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a5f14",
+      "expected_hex": "603ee953",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 14 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_15",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139a7f0",
-      "expected_hex": "9489e153",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 15 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139a7fc",
+      "expected_hex": "dc64e153",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 15 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_16",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a1090",
-      "expected_hex": "f0d4e553",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 16 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a109c",
+      "expected_hex": "34d3e553",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 16 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_17",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x139dc40",
-      "expected_hex": "f8a2e353",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 17 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x139dc4c",
+      "expected_hex": "fc91e353",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 17 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_18",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a51f4",
-      "expected_hex": "60a2e853",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 18 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a5200",
+      "expected_hex": "a092e853",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 18 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_19",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a1da4",
-      "expected_hex": "00a0e653",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 19 slot label at the embedded HLG descriptor."
+      "payload_offset": "0x13a1db0",
+      "expected_hex": "fc70e653",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 19 slot label at the embedded HDR descriptor."
     },
     {
       "id": "language_catalog_20",
       "kind": "replace",
       "partition": "RTOS",
-      "payload_offset": "0x13a44e0",
-      "expected_hex": "0008e853",
-      "replacement_hex": "b8ab0454",
-      "reason": "Point language 20 slot label at the embedded HLG descriptor."
-    },
-    {
-      "id": "hlg_icon",
-      "kind": "replace_blob",
-      "partition": "ICONBIN",
-      "payload_offset": "0x3023af0",
-      "length": 6400,
-      "expected_sha256": "3772a3bed03072a1ad59996b5c7e37fb67729d6cc590cad6b7dbf4be463ba13a",
-      "replacement_sha256": "e64f5bbd971d25c4e822300a8a31e48fbc71effe7b1639eacce94c6d4dc4ab2d",
-      "reason": "Replace icon 25 with the HLG slot icon."
+      "payload_offset": "0x13a44ec",
+      "expected_hex": "844fe853",
+      "replacement_hex": "a8b70d54",
+      "reason": "Point language 20 slot label at the embedded HDR descriptor."
     },
     {
       "id": "payload_checksum_compensation",

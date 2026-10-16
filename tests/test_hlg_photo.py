@@ -169,31 +169,64 @@ class TestCustomFirmwareContainer(unittest.TestCase):
         # Word-sum of payload MUST equal 0
         self.assertEqual(word_sum(payload), 0, "Patched payload word-sum must be exactly 0")
 
-        # Check Q13 Matrix at 0x5404952c (CG)
-        mat_off = foff(0x5404952C)
-        mat_vals = struct.unpack_from("<9h", payload, mat_off)
-        expected_mat = (5546, 2769, -123, 807, 7629, -244, -9, 1131, 7070)
-        self.assertEqual(mat_vals, expected_mat, "Q13 matrix does not match expected HLG values")
 
-        # Check Gamma Descriptor at 0x5407decc (CG)
-        gam_off = foff(0x5407DECC)
+        # 1. Verify Cinema Green (Slot 19) is 100% restored to official factory baseline
+        # Check factory Q13 Matrix at 0x5404952c (CG)
+        cg_mat_off = foff(0x5404952C)
+        cg_mat_vals = struct.unpack_from("<9h", payload, cg_mat_off)
+        expected_cg_mat = (5536, 2464, 192, 192, 6496, 1504, -64, 2112, 6144)
+        self.assertEqual(cg_mat_vals, expected_cg_mat, "Cinema Green Q13 matrix must be restored to factory original")
+
+        # Check factory Gamma Descriptor at 0x5407decc (CG)
+        cg_gam_off = foff(0x5407DECC)
+        self.assertEqual(payload[cg_gam_off + 4], 1)
+        self.assertEqual(payload[cg_gam_off + 5], 1, "Cinema Green desc[5] must be restored to factory 1")
+        cg_rc, cg_gc, cg_bc = struct.unpack_from("<III", payload, cg_gam_off + 8)
+        self.assertEqual((cg_rc, cg_gc, cg_bc), (0x5407F6B4, 0x5407EEB4, 0x5407D6B8))
+
+        # Check factory Multi-Axis Array at 0x5501b814 (CG)
+        cg_ma_off = foff(0x5501B814)
+        cg_ma_blocks = struct.unpack_from("<8I", payload, cg_ma_off)
+        self.assertEqual(cg_ma_blocks, (0x5404A6D4,) * 8, "Cinema Green multi-axis blocks must point to 0x5404A6D4")
+
+        # 2. Verify Slot 22 (HDR Tone) is transformed into BT.2100 HLG HDR Still
+        # Check T_REC[22] -> HLG_REC_VA (0x540db740)
+        t_rec_off = foff(0x55053780 + 22 * 4)
+        rec_va = struct.unpack_from("<I", payload, t_rec_off)[0]
+        self.assertEqual(rec_va, 0x540DB740)
+        mat_va = struct.unpack_from("<I", payload, foff(rec_va + 4))[0]
+        self.assertEqual(mat_va, 0x540DB720)
+        mat_vals = struct.unpack_from("<9h", payload, foff(mat_va))
+        expected_hlg_mat = (5546, 2769, -123, 807, 7629, -244, -9, 1131, 7070)
+        self.assertEqual(mat_vals, expected_hlg_mat, "Q13 matrix in HLG rec does not match expected values")
+
+        # Check T_GAM[22] -> HLG_GAM_DESC_VA (0x540db700)
+        t_gam_off = foff(0x55053138 + 22 * 4)
+        gam_va = struct.unpack_from("<I", payload, t_gam_off)[0]
+        self.assertEqual(gam_va, 0x540DB700)
+        gam_off = foff(gam_va)
         self.assertEqual(payload[gam_off + 4], 1)
         self.assertEqual(payload[gam_off + 5], 0, "desc[5] must be 0 to bypass Cinema Toning override")
         r_c, g_c, b_c = struct.unpack_from("<III", payload, gam_off + 8)
-        self.assertEqual((r_c, g_c, b_c), (0x5404A9B0, 0x5404A9B0, 0x5404A9B0))
+        self.assertEqual((r_c, g_c, b_c), (0x540DB500, 0x540DB500, 0x540DB500))
 
-        # Check Multi-Axis Array at 0x5501b814 (CG)
-        ma_off = foff(0x5501B814)
-        ma_blocks = struct.unpack_from("<8I", payload, ma_off)
-        for b in ma_blocks:
-            self.assertEqual(b, 0x5404AF70, "Multi-axis block must point to Standard neutral maBlock")
+        # Check T_MA[22] -> STD_MA_DESC_VA (0x54049de8)
+        t_ma_off = foff(0x55053504 + 22 * 4)
+        ma_va = struct.unpack_from("<I", payload, t_ma_off)[0]
+        self.assertEqual(ma_va, 0x54049DE8, "T_MA[22] must point to Standard neutral multi-axis table")
 
-        # Check hook instruction at 0x5380bf50
+        # Check hook instruction at 0x5380bf50: b 0x540db200
         hook_off = foff(0x5380BF50)
         hook_word = struct.unpack_from("<I", payload, hook_off)[0]
-        # b 0x5404a6d4
-        expected_insn = 0xEA20F9DF
+        expected_insn = 0xEA233CAA
         self.assertEqual(hook_word, expected_insn, f"Hook instruction {hook_word:#010x} != {expected_insn:#010x}")
+
+        # Check UI Text ID 306 across 21 languages: points to descriptor for "HDR"
+        for lang_idx in range(21):
+            row_va = struct.unpack_from("<I", payload, foff(0x55002118 + lang_idx * 4))[0]
+            desc_va = struct.unpack_from("<I", payload, foff(row_va + 306 * 4))[0]
+            self.assertEqual(desc_va, 0x540DB7A8, f"Lang {lang_idx} Text 306 descriptor mismatch")
+
 
 
 if __name__ == "__main__":

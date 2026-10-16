@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.fw_container import FirmwareError, decode_container, parse_sections, sha256_hex, verify_container, word_sum
+
 
 
 def parse_int(value: Any) -> int:
