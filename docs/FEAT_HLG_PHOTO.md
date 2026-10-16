@@ -123,14 +123,13 @@ This yields a monotonic, non-decreasing 512-byte table (`256 × uint16` in `[0, 
 
 ---
 
-## 4. Verification & Self-Test Results
-
+### 4.1 Unit Test Suite
 Run the full self-test suite:
 ```powershell
 python -m unittest tests/test_hlg_photo.py
 ```
 
-### Verified Test Cases
+Verified Test Cases:
 1. `test_hlg_oetf_reference_values`: Bit-accurate verification against ITU-R BT.2100 / ARIB STD-B67 standard points ($E=0 \rightarrow 0$, $E=1/12 \rightarrow 0.5$, $E=1.0 \rightarrow 1.0$).
 2. `test_hlg_color_matrix_q13`: Verifies all rows sum to exactly 8192 with signed int16 bounds.
 3. `test_hlg_precompensated_curve`: Verifies monotonicity and full 14-bit dynamic range ($0..16383$).
@@ -139,6 +138,34 @@ python -m unittest tests/test_hlg_photo.py
 6. `test_littlecms_parsing`: Verifies LittleCMS / ColorSync parsing of `"Ricoh GR IV BT.2100 HLG"`.
 7. `test_jpeg_concatenation_with_swallowed_soi`: Simulates the camera's two-block DMA write, verifies swallowed SOI marker behavior, and verifies that PIL and LittleCMS extract and parse the HDR ICC profile cleanly.
 8. `test_dist_firmware_container`: Decodes `dist/fwdc248b_hlg.bin`, verifies container LZSS frames, payload word sum == `0x00000000`, and validates all patched structures.
+
+### 4.2 Closed-Loop Dual-OS Simulation Verification (`gr4_sim`)
+
+The feature was validated end-to-end within the closed-loop dual-OS hardware simulation environment (`gr4_sim`):
+```powershell
+python -m gr4_sim verify -o worktrees/feat-hlg-photo/analysis/sim_verification_report.md
+python -m gr4_sim shoot -l 19 -o worktrees/feat-hlg-photo/assets/hlg_sim_capture_slot19.jpg
+```
+
+#### Simulation Verification Metrics Summary (9/9 Tests Pass, 94.9% Score):
+| Test ID | Category | Feature / Scope | Status | Score | Key Metric / Result |
+| :--- | :--- | :--- | :---: | :---: | :--- |
+| `ISP-01` | ISP / Color | Macbeth ColorChecker Standard Look Baseline | [PASS] | 70.6 | Avg ΔE00 = 2.94 |
+| `ISP-02` | ISP / HLG Photo | BT.2100 HLG HDR Photo Colorimetry & Rec.2020 Gamut (Slot 19) | [PASS] | 88.5 | Avg ΔE00 = 10.87 (perceptual HLG transfer curve shift) |
+| `ISP-03` | ISP / Tone Curve | ARIB STD-B67 1D LUT Transfer Curve Fidelity & Monotonicity | [PASS] | 95.0 | Curve RMSE = 0.0025 |
+| `META-01` | Metadata / ICC | ICC v4.4 APP2 Marker CICP [9, 18, 0, 1] Display Profile | [PASS] | 100.0 | CICP [9, 18, 0, 1] Valid |
+| `VID-01` | Video / 4K | 4K 3840x2160 Movie Sequence (Mov4kExt) & H.264 SPS Level 5.1 | [PASS] | 100.0 | 3840x2160@30p (Level 51) |
+| `VID-02` | Video / Container | ISO Base Media MP4 Container colr(nclx: 9, 18, 9, 1) Tagging | [PASS] | 100.0 | Valid nclx box |
+| `SYS-01` | System / Dual-OS | Dual-OS IPCU / Shmem Capture Intercept & Phase 2 10-bit HIF | [PASS] | 100.0 | Intercept OK |
+| `FW-01` | Firmware / Integrity | Firmware Container 32-bit Little-Endian Word-Sum Checksum | [PASS] | 100.0 | Word-sum == 0x00000000 |
+| `FW-02` | Firmware / HLG Custom | Custom BT.2100 HLG Firmware Container & Hook Integrity | [PASS] | 100.0 | Disasm verified `b 0x5404a6d4` |
+
+#### Simulated Test Frame Verification (`assets/hlg_sim_capture_slot19.jpg`):
+- **Format**: JPEG with in-camera APP2 ICC profile embedded (5773 bytes).
+- **APP2 Marker**: Offset `0x0002`, length 552 bytes, Header `ICC_PROFILE\0\x01\x01`.
+- **CICP Tag**: Tag `cicp` embedded at offset 240, values `[9, 18, 0, 1]` (Rec.2020 / HLG / RGB / Full range).
+- **Profile Name**: LittleCMS parsed `"Ricoh GR IV BT.2100 HLG"`.
+- **Dynamic Range**: Highlight headroom preserved with zero clipping.
 
 ---
 
