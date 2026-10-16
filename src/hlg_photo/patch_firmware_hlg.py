@@ -23,6 +23,7 @@ to the Ricoh GR IV Standard Edition (China Mainland sales version) v1.11 firmwar
 import argparse
 import hashlib
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -43,6 +44,12 @@ from tools.fw_container import (
     MAGIC,
     HEADER_SIZE,
     DECODED_PAYLOAD_BYTES,
+)
+from src.hlg_photo.patch_audit import (
+    load_manifest,
+    validate_baseline,
+    validate_container_identity,
+    validate_patched_payload,
 )
 
 RTOS_BASE = 0x53000000
@@ -217,8 +224,10 @@ def patch_payload(payload_bytes: bytes, target_tone_id: int = TARGET_TONE_ID) ->
     p[rodata_off : rodata_off + len(hook_code)] = hook_code
 
     # 5b. Place APP2 header and ICC profile at APP2_PAYLOAD_VA
-    app2_hdr = b"ICC_PROFILE\x00\x01\x01\x00\x00"  # 14 bytes + 2 bytes padding = 16 bytes
-    app2_data = app2_hdr + icc_bytes
+    # Correct layout: exactly 14 bytes header, followed immediately by 532 bytes ICC, then 2 bytes trailing zero pad
+    app2_hdr = b"ICC_PROFILE\x00\x01\x01"  # Exactly 14 bytes (NO PADDING BETWEEN HEADER AND ICC!)
+    app2_data = app2_hdr + icc_bytes + b"\x00\x00"  # 14 + 532 + 2 = 548 bytes (137 words)
+    assert len(app2_data) == 548
     app2_off = foff(APP2_PAYLOAD_VA)
     p[app2_off : app2_off + len(app2_data)] = app2_data
 
@@ -263,26 +272,58 @@ def patch_payload(payload_bytes: bytes, target_tone_id: int = TARGET_TONE_ID) ->
     return p
 
 
-def patch_firmware(input_path: Path, output_path: Path, target_tone_id: int = TARGET_TONE_ID):
-    """Patch full official fwdc248b.bin and save flashable custom firmware."""
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write only after all checks pass, then atomically replace the destination."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def patch_firmware(
+    input_path: Path,
+    output_path: Path,
+    target_tone_id: int = TARGET_TONE_ID,
+    manifest_path: Path | None = None,
+):
+    """Patch official v1.11 firmware after Gate 1 baseline and manifest checks."""
+    manifest_path = manifest_path or WORKTREE_ROOT / "analysis" / "hlg_patch_manifest.json"
+    manifest = load_manifest(manifest_path)
     in_bytes = input_path.read_bytes()
     is_container = in_bytes[:8] == MAGIC
 
+    if input_path.resolve() == output_path.resolve():
+        raise ValueError("Refusing to overwrite the input firmware")
+
     if is_container:
         print(f"Decoding firmware container: {input_path} ({len(in_bytes):,} bytes)")
+        validate_container_identity(in_bytes, manifest)
         payload, frames, consumed = decode_container(in_bytes)
         verify_container(in_bytes, payload, consumed)
     else:
         print(f"Reading raw payload: {input_path} ({len(in_bytes):,} bytes)")
         payload = in_bytes
 
-    assert len(payload) == DECODED_PAYLOAD_BYTES, f"Unexpected payload size: {len(payload)}"
+    if len(payload) != DECODED_PAYLOAD_BYTES:
+        raise ValueError(f"Unexpected payload size: {len(payload)}")
+    validate_baseline(payload, manifest, WORKTREE_ROOT)
+    print(f"Gate 1 baseline validated with manifest: {manifest_path}")
 
     print("Applying BT.2100 HLG HDR Photo patches...")
     patched_payload = bytes(patch_payload(payload, target_tone_id))
+    validate_patched_payload(payload, patched_payload, manifest)
     print(f"Patched payload word-sum: {word_sum(patched_payload):#010x} (MATCHES 0x0)")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     if is_container:
         print("Re-encoding into official RICOH LZSS firmware container...")
         changed_offsets = diff_offsets(payload, patched_payload)
@@ -291,15 +332,16 @@ def patch_firmware(input_path: Path, output_path: Path, target_tone_id: int = TA
         # Verification pass: decode back and compare
         print("Verifying re-encoded container integrity...")
         dec_test, _, used = decode_container(container_bytes)
-        assert dec_test == patched_payload, "Decoded test container mismatch with patched payload!"
+        if dec_test != patched_payload:
+            raise ValueError("Decoded test container mismatch with patched payload")
         verify_container(container_bytes, patched_payload, used)
 
-        output_path.write_bytes(container_bytes)
+        _atomic_write(output_path, container_bytes)
         print(f"Successfully generated custom firmware: {output_path}")
         print(f"  - Size: {len(container_bytes):,} bytes ({reemitted} frames re-emitted)")
         print(f"  - SHA-256: {sha256_hex(container_bytes)}")
     else:
-        output_path.write_bytes(patched_payload)
+        _atomic_write(output_path, patched_payload)
         print(f"Successfully generated custom payload: {output_path}")
         print(f"  - Size: {len(patched_payload):,} bytes")
         print(f"  - SHA-256: {sha256_hex(patched_payload)}")
@@ -327,6 +369,12 @@ def main():
         default=TARGET_TONE_ID,
         help="Target Image Control slot ID to transform (default: 19 = Cinema Green)",
     )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=WORKTREE_ROOT / "analysis" / "hlg_patch_manifest.json",
+        help="Gate 1 machine-readable patch manifest",
+    )
     args = parser.parse_args()
 
     in_path = Path(args.input)
@@ -340,7 +388,11 @@ def main():
             return 1
 
     out_path = Path(args.output)
-    return patch_firmware(in_path, out_path, args.target_tone_id)
+    try:
+        return patch_firmware(in_path, out_path, args.target_tone_id, args.manifest)
+    except (ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
