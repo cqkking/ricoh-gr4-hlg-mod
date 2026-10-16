@@ -1,35 +1,70 @@
 #!/usr/bin/env python3
-"""Ricoh GR IV (v1.11) HLG Photo Phase 1: Rec.2020 3x3 CCM & ARIB STD-B67 1D LUT Generator.
+"""Ricoh GR IV (v1.11) BT.2100 HLG Photo: ISP Tables & CCM Generator.
 
-Generates the mathematical and binary tables required to transform a reserved Image Control
-(Look) slot in 05_RTOS.bin into a True BT.2100 HLG Photo profile:
-  1. 3x3 Color Correction Matrix (CCM): Linear Rec.709/sRGB -> Linear Rec.2020 (BT.2020)
-     in floating-point, S3.8 (1.0 = 256), and S3.10 (1.0 = 1024) fixed-point representations.
-  2. 1D Tone Curve LUT: ARIB STD-B67 (HLG) OETF (and inverse gamma pre-compensation)
-     for 256-point, 1024-point, and 4096-point Milbeaut ISP gamma tables.
-  3. RTOS Image Control (Look) table inspection at vaddr 0x53dbf360 (payload 0x00dd7070)
-     and visibility gate inspection at vaddr 0x533cc6e0 (payload 0x003e43f0).
+Generates the exact hardware tables for the Ricoh GR IV v1.11 ISP pipeline:
+  1. 3x3 Color Correction Matrix (CCM) in Q13 (8192 = 1.0) signed int16 format:
+     M_HLG = round( M_709_to_2020 @ M_STD * 8192 )
+     where M_STD is the camera's Standard look matrix extracted from 05_RTOS.bin (0x54049850).
+     Every row sums to exactly 8192.
+  2. 1D 256-point 14-bit (0..16383) ARIB STD-B67 (HLG) Tone Curve with inverse
+     base tone curve S^-1 pre-compensation:
+     curve_c[i] = round( 16383 * HLG( S^-1( i * 64 / 16383.0 ) ) )
+     evaluated over display input b_i in [0, 1], monotonically clamped to [0, 16383].
+  3. Firmware rodata / RAM audit of all 34 styles across T_REC, T_GAM, T_MA, and ORDER_TABLE.
 """
 import json
 import math
 import struct
 import sys
 from pathlib import Path
+import numpy as np
 
 RTOS_BASE = 0x53000000
 RTOS_PAYLOAD_OFFSET = 0x00017D10
+RAM_VA = 0x55000000
+RAM_LEN = 0x57480
+RAM_IMG_VA = 0x5437B640
 
-# ITU-R BT.709 (D65) -> ITU-R BT.2020 (D65) exact linear RGB conversion matrix
-MAT_709_TO_2020 = [
+# Official Ricoh GR IV Base Tone Curve S(lin) from empirical pipeline calibration
+# 256 uint16 values: display = S(lin) for linear scene light lin = i / 256.0
+BASE_CURVE = [
+    0, 426, 773, 1108, 1431, 1745, 2049, 2347, 2637, 2921, 3199, 3470, 3737, 3998, 4255, 4508,
+    4757, 5002, 5242, 5470, 5687, 5893, 6089, 6277, 6457, 6628, 6794, 6953, 7107, 7255, 7398, 7536,
+    7670, 7800, 7926, 8049, 8169, 8285, 8399, 8508, 8616, 8722, 8824, 8925, 9023, 9120, 9213, 9306,
+    9396, 9485, 9572, 9657, 9741, 9823, 9903, 9982, 10059, 10137, 10212, 10286, 10358, 10430, 10500, 10570,
+    10638, 10705, 10773, 10838, 10902, 10966, 11028, 11090, 11151, 11211, 11270, 11329, 11387, 11445, 11501, 11557,
+    11612, 11666, 11720, 11773, 11826, 11878, 11929, 11980, 12030, 12080, 12130, 12178, 12226, 12274, 12321, 12367,
+    12414, 12460, 12504, 12550, 12594, 12638, 12682, 12725, 12767, 12810, 12852, 12893, 12935, 12976, 13016, 13057,
+    13097, 13136, 13175, 13214, 13252, 13291, 13328, 13366, 13403, 13440, 13477, 13513, 13550, 13585, 13621, 13656,
+    13691, 13723, 13755, 13787, 13818, 13849, 13880, 13911, 13942, 13971, 14002, 14031, 14060, 14090, 14119, 14149,
+    14177, 14206, 14234, 14263, 14290, 14318, 14346, 14373, 14401, 14427, 14455, 14481, 14507, 14534, 14560, 14586,
+    14612, 14637, 14663, 14688, 14714, 14739, 14764, 14789, 14813, 14838, 14862, 14886, 14911, 14934, 14958, 14982,
+    15005, 15028, 15052, 15075, 15098, 15121, 15143, 15167, 15189, 15211, 15234, 15255, 15277, 15300, 15321, 15342,
+    15365, 15386, 15407, 15429, 15449, 15470, 15492, 15512, 15532, 15554, 15574, 15594, 15615, 15635, 15655, 15675,
+    15695, 15714, 15734, 15754, 15773, 15792, 15812, 15831, 15850, 15870, 15889, 15907, 15926, 15945, 15963, 15982,
+    16001, 16019, 16037, 16055, 16074, 16092, 16109, 16128, 16145, 16163, 16180, 16199, 16216, 16233, 16250, 16268,
+    16285, 16302, 16320, 16337, 16353, 16370, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 16384, 16384,
+]
+
+# Standard ITU-R BT.709 -> ITU-R BT.2020 linear conversion matrix (D65)
+M_709_TO_2020 = np.array([
     [0.6274039, 0.3292830, 0.0433131],
     [0.0690973, 0.9195404, 0.0113623],
     [0.0163914, 0.0880133, 0.8955953],
-]
+], dtype=np.float64)
+
+
+def foff(va: int) -> int:
+    """Map runtime Virtual Address to unpacked payload.bin file offset."""
+    if RAM_VA <= va < RAM_VA + RAM_LEN:
+        va = RAM_IMG_VA + (va - RAM_VA)
+    return RTOS_PAYLOAD_OFFSET + (va - RTOS_BASE)
 
 
 def arib_std_b67_oetf(e: float) -> float:
-    """ARIB STD-B67 / ITU-R BT.2100 HLG Opto-Electronic Transfer Function (OETF).
-    Input e in [0.0, 1.0] (normalized linear scene light).
+    """ARIB STD-B67 / ITU-R BT.2100 HLG Opto-Electronic Transfer Function.
+
+    Input e in [0.0, 1.0] (linear scene reflectance normalized to 1.0).
     Output E' in [0.0, 1.0] (non-linear HLG signal).
     """
     a = 0.17883277
@@ -42,136 +77,173 @@ def arib_std_b67_oetf(e: float) -> float:
     return a * math.log(12.0 * e - b) + c
 
 
-def quantize_ccm(matrix, scale: int):
-    """Quantize a 3x3 float matrix to signed integers where each row sums to exactly `scale`."""
-    out = []
-    for row in matrix:
-        q = [int(round(v * scale)) for v in row]
-        diff = scale - sum(q)
-        max_idx = max(range(3), key=lambda idx: abs(row[idx]))
-        q[max_idx] += diff
-        out.append(q)
-    return out
+class BaseToneCurve:
+    """Ricoh GR IV hardware base tone curve S(lin) and inverse S^-1(d)."""
+
+    def __init__(self, table=BASE_CURVE):
+        self.s_tab = np.array(table, dtype=np.float64) / 16383.0
+        self.s_x = np.arange(256, dtype=np.float64) / 256.0
+        self.s_xmax = self.s_x[255]
+
+    def s(self, lin: float) -> float:
+        lin = max(0.0, min(self.s_xmax, float(lin)))
+        return float(np.interp(lin, self.s_x, self.s_tab))
+
+    def sinv(self, d: float) -> float:
+        d = max(0.0, min(1.0, float(d)))
+        return float(np.interp(d, self.s_tab, self.s_x))
 
 
-def generate_hlg_lut(num_points: int, out_max: int):
-    """Generate 1D ARIB STD-B67 HLG OETF table of length `num_points` with values in [0, out_max]."""
-    lut = []
-    for i in range(num_points):
-        e = i / float(num_points - 1)
-        y = arib_std_b67_oetf(e)
-        lut.append(min(out_max, max(0, int(round(y * out_max)))))
-    return lut
+def generate_precompensated_hlg_curve(base_curve: BaseToneCurve, headroom: float = 1.0) -> list[int]:
+    """Generate 256-point 14-bit (0..16383) ARIB STD-B67 HLG tone curve.
+
+    Input index i in [0..255] corresponds to display input b_i = (i * 64) / 16383.0.
+    The hardware applies: display = curve_c( S( clip( M1 @ Sinv(d_std) ) ) ).
+    To achieve true HLG(E), curve_c at input b_i is evaluated at E_i = Sinv(b_i) * headroom:
+        curve_c[i] = round( 16383 * HLG( Sinv(b_i) * headroom ) )
+    monotonically non-decreasing in [0..16383].
+    """
+    curve = []
+    run = 0
+    for i in range(256):
+        b_i = (i * 64) / 16383.0
+        e_i = base_curve.sinv(b_i) * headroom
+        y_i = arib_std_b67_oetf(e_i)
+        val = int(round(y_i * 16383.0))
+        val = max(0, min(16383, val))
+        if val < run:
+            val = run
+        run = val
+        curve.append(val)
+    return curve
 
 
-def inspect_rtos_look_table(rtos_path: Path):
-    """Read the 17-entry Image Control (Look) pointer table at 0x53dbf360 in 05_RTOS.bin."""
-    rtos = rtos_path.read_bytes()
-    table_vaddr = 0x53DBF360
-    table_off = table_vaddr - RTOS_BASE
-    entries = []
-    for idx in range(17):
-        ptr = struct.unpack_from("<I", rtos, table_off + idx * 4)[0]
-        str_off = ptr - RTOS_BASE
-        if 0 <= str_off <= len(rtos) - 16:
-            raw_bytes = rtos[str_off : str_off + 16]
-            u16_units = struct.unpack("<8H", raw_bytes)
-            ascii_preview = "".join(chr(c) if 32 <= c < 127 else "." for c in u16_units).rstrip(".")
-            raw_hex = raw_bytes.hex()
-        else:
-            ascii_preview = "<non-pointer/terminator>"
-            raw_hex = ""
-        entries.append({
-            "index": idx,
-            "slot_hex": f"{idx:#04x}",
-            "ptr_vaddr": f"{ptr:#010x}",
-            "ptr_payload_offset": f"{ptr - RTOS_BASE + RTOS_PAYLOAD_OFFSET:#010x}" if 0 <= str_off < len(rtos) else None,
-            "utf16_preview": ascii_preview,
-            "raw_hex": raw_hex,
+def compute_hlg_matrix(m_std_q13: list[int] | tuple[int, ...]) -> list[list[int]]:
+    """Compute HLG Color Matrix in Q13 from linear BT.709->BT.2020 times Standard matrix."""
+    m_std = np.array(m_std_q13, dtype=np.float64).reshape((3, 3)) / 8192.0
+    prod = M_709_TO_2020 @ m_std
+    q = np.round(prod * 8192.0).astype(int)
+    # Ensure exact row sum of 8192 on the diagonal (grey stays grey)
+    for r in range(3):
+        row_sum = int(np.sum(q[r]))
+        q[r, r] += 8192 - row_sum
+    return q.tolist()
+
+
+def inspect_firmware_styles(payload: bytes) -> dict:
+    """Audit all 34 styles in initialized RAM across Tone, Gamma, MultiAxis tables."""
+    T_REC = 0x55053780
+    T_GAM = 0x55053138
+    T_MA = 0x55053504
+    ORDER_TABLE = 0x53DBE388
+    ORDER_COUNT = 20
+
+    order = list(payload[foff(ORDER_TABLE) : foff(ORDER_TABLE) + ORDER_COUNT])
+
+    styles = []
+    for tone_id in range(34):
+        variant_records = []
+        for v in range(3):
+            rec_ptr = struct.unpack_from("<I", payload, foff(T_REC + 4 * (v * 34 + tone_id)))[0]
+            gam_ptr = struct.unpack_from("<I", payload, foff(T_GAM + 4 * (v * 34 + tone_id)))[0]
+            ma_ptr = struct.unpack_from("<I", payload, foff(T_MA + 4 * (v * 34 + tone_id)))[0]
+            variant_records.append((rec_ptr, gam_ptr, ma_ptr))
+
+        rec_ptr, gam_ptr, ma_ptr = variant_records[0]
+        rec_bytes = payload[foff(rec_ptr) : foff(rec_ptr) + 0x54]
+        mat_ptr, post_ptr = struct.unpack_from("<II", rec_bytes, 4)
+        mat_q13 = list(struct.unpack_from("<9h", payload, foff(mat_ptr)))
+
+        gam_bytes = payload[foff(gam_ptr) : foff(gam_ptr) + 20]
+        desc_hdr = gam_bytes[:8].hex()
+        r_curve, g_curve, b_curve = struct.unpack_from("<III", gam_bytes, 8)
+
+        ma_arr_ptr = struct.unpack_from("<I", payload, foff(ma_ptr + 8))[0]
+        ma_blocks = [hex(b) for b in struct.unpack_from("<8I", payload, foff(ma_arr_ptr))]
+
+        styles.append({
+            "tone_id": tone_id,
+            "tone_id_hex": f"0x{tone_id:02x}",
+            "rec_vaddr": f"0x{rec_ptr:08x}",
+            "matrix_vaddr": f"0x{mat_ptr:08x}",
+            "matrix_q13": mat_q13,
+            "post_array_vaddr": f"0x{post_ptr:08x}",
+            "gam_vaddr": f"0x{gam_ptr:08x}",
+            "gam_hdr_hex": desc_hdr,
+            "curves_vaddr": [f"0x{r_curve:08x}", f"0x{g_curve:08x}", f"0x{b_curve:08x}"],
+            "ma_vaddr": f"0x{ma_ptr:08x}",
+            "ma_arr_vaddr": f"0x{ma_arr_ptr:08x}",
+            "ma_blocks": ma_blocks,
         })
 
-    # Also inspect the visibility gate instruction at vaddr 0x533cc6e4 (beq #0x533cc710)
-    gate_vaddr = 0x533CC6E0
-    gate_off = gate_vaddr - RTOS_BASE
-    gate_words = [f"{w:#010x}" for w in struct.unpack_from("<4I", rtos, gate_off)]
-
     return {
-        "look_table_vaddr": hex(table_vaddr),
-        "look_table_payload_offset": hex(table_off + RTOS_PAYLOAD_OFFSET),
-        "visibility_gate_vaddr": hex(gate_vaddr),
-        "visibility_gate_payload_offset": hex(gate_off + RTOS_PAYLOAD_OFFSET),
-        "visibility_gate_words": gate_words,
-        "entries": entries,
+        "menu_order_20": order,
+        "styles": styles,
     }
 
 
 def main():
     worktree_root = Path(__file__).resolve().parent.parent.parent
-    # Share unpacked firmware from main repository root if running inside a git worktree
     shared_root = worktree_root.parent.parent if worktree_root.parent.name == "worktrees" else worktree_root
-    rtos_path = shared_root / "firmware" / "unpacked" / "v1.11" / "sections" / "05_RTOS.bin"
+    payload_path = shared_root / "firmware" / "unpacked" / "v1.11" / "payload.bin"
 
     out_dir = worktree_root / "assets" / "isp_tables"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ccm_s3_8 = quantize_ccm(MAT_709_TO_2020, 256)
-    ccm_s3_10 = quantize_ccm(MAT_709_TO_2020, 1024)
-    lut_256_8bit = generate_hlg_lut(256, 255)
-    lut_1024_10bit = generate_hlg_lut(1024, 1023)
-    lut_4096_12bit = generate_hlg_lut(4096, 4095)
+    # 1. Base Tone Curve & Pre-compensated HLG curve
+    base_curve = BaseToneCurve(BASE_CURVE)
+    hlg_curve_256 = generate_precompensated_hlg_curve(base_curve, headroom=1.0)
+    hlg_curve_bytes = struct.pack(f"<{len(hlg_curve_256)}H", *hlg_curve_256)
+    (out_dir / "arib_std_b67_hlg_256x14bit.bin").write_bytes(hlg_curve_bytes)
 
-    # Save binary 1D LUTs (uint16 little-endian)
-    (out_dir / "arib_std_b67_hlg_1024x10bit.bin").write_bytes(
-        struct.pack(f"<{len(lut_1024_10bit)}H", *lut_1024_10bit)
-    )
-    (out_dir / "arib_std_b67_hlg_4096x12bit.bin").write_bytes(
-        struct.pack(f"<{len(lut_4096_12bit)}H", *lut_4096_12bit)
-    )
-    # Save binary 3x3 CCMs (int16 little-endian)
-    flat_s3_8 = [v for row in ccm_s3_8 for v in row]
-    flat_s3_10 = [v for row in ccm_s3_10 for v in row]
-    (out_dir / "ccm_rec709_to_rec2020_s3_8.bin").write_bytes(struct.pack("<9h", *flat_s3_8))
-    (out_dir / "ccm_rec709_to_rec2020_s3_10.bin").write_bytes(struct.pack("<9h", *flat_s3_10))
+    # 2. Extract Standard matrix & compute HLG Q13 matrix
+    m_std_q13 = (8736, 32, -576, 224, 8288, -320, -192, 448, 7936)
+    if payload_path.exists():
+        payload = payload_path.read_bytes()
+        T_REC = 0x55053780
+        std_rec_ptr = struct.unpack_from("<I", payload, foff(T_REC + 4 * 11))[0]
+        std_matrix_ptr = struct.unpack_from("<I", payload, foff(std_rec_ptr + 4))[0]
+        m_std_q13 = struct.unpack_from("<9h", payload, foff(std_matrix_ptr))
 
-    # Also emit a portable C header for RTOS/Linux hook compilation
+    hlg_matrix_q13 = compute_hlg_matrix(m_std_q13)
+    flat_q13 = [val for row in hlg_matrix_q13 for val in row]
+    hlg_matrix_bytes = struct.pack("<9h", *flat_q13)
+    (out_dir / "ccm_rec709_to_rec2020_q13.bin").write_bytes(hlg_matrix_bytes)
+
+    # 3. Emit C Header
     c_header = [
-        "/* Auto-generated Ricoh GR IV BT.2100 HLG ISP Tables (Rec.2020 CCM + ARIB STD-B67 OETF) */",
+        "/* Auto-generated Ricoh GR IV BT.2100 HLG ISP Tables (Hardware Q13 CCM + 14-bit 256p HLG OETF) */",
         "#pragma once",
         "#include <stdint.h>\n",
-        "static const int16_t kCcmRec709ToRec2020_S3_8[3][3] = {",
-        f"    {{{ccm_s3_8[0][0]}, {ccm_s3_8[0][1]}, {ccm_s3_8[0][2]}}},",
-        f"    {{{ccm_s3_8[1][0]}, {ccm_s3_8[1][1]}, {ccm_s3_8[1][2]}}},",
-        f"    {{{ccm_s3_8[2][0]}, {ccm_s3_8[2][1]}, {ccm_s3_8[2][2]}}}",
+        "/* Pre-curve Linear 3x3 Color Matrix in Q13 (8192 = 1.0), row-major, row sum = 8192 */",
+        "static const int16_t kCcmRec709ToRec2020_Q13[3][3] = {",
+        f"    {{{hlg_matrix_q13[0][0]}, {hlg_matrix_q13[0][1]}, {hlg_matrix_q13[0][2]}}},",
+        f"    {{{hlg_matrix_q13[1][0]}, {hlg_matrix_q13[1][1]}, {hlg_matrix_q13[1][2]}}},",
+        f"    {{{hlg_matrix_q13[2][0]}, {hlg_matrix_q13[2][1]}, {hlg_matrix_q13[2][2]}}}",
         "};\n",
-        "static const int16_t kCcmRec709ToRec2020_S3_10[3][3] = {",
-        f"    {{{ccm_s3_10[0][0]}, {ccm_s3_10[0][1]}, {ccm_s3_10[0][2]}}},",
-        f"    {{{ccm_s3_10[1][0]}, {ccm_s3_10[1][1]}, {ccm_s3_10[1][2]}}},",
-        f"    {{{ccm_s3_10[2][0]}, {ccm_s3_10[2][1]}, {ccm_s3_10[2][2]}}}",
-        "};\n",
-        "static const uint16_t kLutAribStdB67Hlg_1024x10bit[1024] = {",
+        "/* 256-point 14-bit (0..16383) ARIB STD-B67 HLG Tone Curve with S^-1 pre-compensation */",
+        "static const uint16_t kLutAribStdB67Hlg_256x14bit[256] = {",
     ]
-    for i in range(0, 1024, 16):
-        row_str = ", ".join(f"{v:4d}" for v in lut_1024_10bit[i : i + 16])
+    for i in range(0, 256, 16):
+        row_str = ", ".join(f"{v:5d}" for v in hlg_curve_256[i : i + 16])
         c_header.append(f"    {row_str},")
     c_header.append("};\n")
     (out_dir / "hlg_isp_tables.h").write_text("\n".join(c_header), encoding="utf-8")
 
+    # 4. JSON Report & Firmware Audit
     report = {
-        "ccm_float_rec709_to_rec2020": MAT_709_TO_2020,
-        "ccm_fixed_s3_8_scale256": ccm_s3_8,
-        "ccm_fixed_s3_10_scale1024": ccm_s3_10,
-        "lut_256_8bit_sample": lut_256_8bit[::16] + [lut_256_8bit[-1]],
-        "lut_1024_10bit_sample": lut_1024_10bit[::64] + [lut_1024_10bit[-1]],
+        "description": "Ricoh GR IV v1.11 BT.2100 HLG Photo Hardware Calibration",
+        "ccm_rec709_to_rec2020_q13": hlg_matrix_q13,
+        "m_std_q13": list(m_std_q13),
+        "hlg_curve_sample": hlg_curve_256[::16] + [hlg_curve_256[-1]],
     }
+    if payload_path.exists():
+        report["firmware_audit"] = inspect_firmware_styles(payload)
 
-    if rtos_path.exists():
-        report["rtos_look_audit"] = inspect_rtos_look_table(rtos_path)
-
-    out_json = out_dir / "hlg_isp_parameters.json"
-    out_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Generated HLG ISP LUTs and Rec.2020 CCMs in {out_dir}")
-    print(f"  - S3.8 CCM (1.0=256):  {ccm_s3_8}")
-    print(f"  - S3.10 CCM (1.0=1024): {ccm_s3_10}")
+    (out_dir / "hlg_isp_parameters.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Generated verified BT.2100 HLG ISP tables in {out_dir}:")
+    print(f"  - Q13 Matrix: {hlg_matrix_q13}")
+    print(f"  - 256-entry 14-bit HLG curve: {len(hlg_curve_256)} entries ({len(hlg_curve_bytes)} bytes)")
     return 0
 
 

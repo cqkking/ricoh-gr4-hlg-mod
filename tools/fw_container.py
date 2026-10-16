@@ -290,9 +290,9 @@ def cmd_info(args):
     print(f"SHA-256    : {digest}")
     print(f"Official   : {'YES (RICOH GR IV v1.11)' if digest == OFFICIAL_V111_SHA256 else 'MODIFIED / CUSTOM'}")
 
-    model = data[8:20].rstrip(b"\0").decode("ascii", errors="replace")
-    vendor = data[20:48].rstrip(b"\0").decode("ascii", errors="replace")
-    build_ts = data[84:108].rstrip(b"\0").decode("ascii", errors="replace")
+    model = "".join(chr(c) if 32 <= c < 127 else "" for c in data[8:20]).strip()
+    vendor = "".join(chr(c) if 32 <= c < 127 else "" for c in data[20:48]).strip()
+    build_ts = "".join(chr(c) if 32 <= c < 127 else "" for c in data[84:108]).strip()
     print(f"Model      : {model} ({vendor})")
     print(f"Build Time : {build_ts}")
 

@@ -8,8 +8,10 @@ output/
 *.img
 *.zip
 
-# Keep tracked small binary assets (e.g. ICC profiles)
+# Keep tracked small binary assets (e.g. ICC profiles, ISP tables, icons)
 !assets/icc/*.icc
+!assets/isp_tables/*.bin
+!assets/icons/*.bin
 
 # Git worktrees directory
 worktrees/
