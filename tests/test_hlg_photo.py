@@ -170,24 +170,25 @@ class TestCustomFirmwareContainer(unittest.TestCase):
         self.assertEqual(word_sum(payload), 0, "Patched payload word-sum must be exactly 0")
 
 
-        # 1. Verify Cinema Green (Slot 19) is 100% restored to official factory baseline
-        # Check factory Q13 Matrix at 0x5404952c (CG)
+        # 1. Verify Slot 19 remains untouched at official factory baseline
+        # Check factory Q13 Matrix at 0x5404952c
         cg_mat_off = foff(0x5404952C)
         cg_mat_vals = struct.unpack_from("<9h", payload, cg_mat_off)
         expected_cg_mat = (5536, 2464, 192, 192, 6496, 1504, -64, 2112, 6144)
-        self.assertEqual(cg_mat_vals, expected_cg_mat, "Cinema Green Q13 matrix must be restored to factory original")
+        self.assertEqual(cg_mat_vals, expected_cg_mat, "Slot 19 Q13 matrix must remain factory original")
 
-        # Check factory Gamma Descriptor at 0x5407decc (CG)
+        # Check factory Gamma Descriptor at 0x5407decc
         cg_gam_off = foff(0x5407DECC)
         self.assertEqual(payload[cg_gam_off + 4], 1)
-        self.assertEqual(payload[cg_gam_off + 5], 1, "Cinema Green desc[5] must be restored to factory 1")
+        self.assertEqual(payload[cg_gam_off + 5], 1, "Slot 19 desc[5] must remain factory 1")
         cg_rc, cg_gc, cg_bc = struct.unpack_from("<III", payload, cg_gam_off + 8)
         self.assertEqual((cg_rc, cg_gc, cg_bc), (0x5407F6B4, 0x5407EEB4, 0x5407D6B8))
 
-        # Check factory Multi-Axis Array at 0x5501b814 (CG)
+        # Check factory Multi-Axis Array at 0x5501b814
         cg_ma_off = foff(0x5501B814)
         cg_ma_blocks = struct.unpack_from("<8I", payload, cg_ma_off)
-        self.assertEqual(cg_ma_blocks, (0x5404A6D4,) * 8, "Cinema Green multi-axis blocks must point to 0x5404A6D4")
+        self.assertEqual(cg_ma_blocks, (0x5404A6D4,) * 8, "Slot 19 multi-axis blocks must point to 0x5404A6D4")
+
 
         # 2. Verify Slot 22 (HDR Tone) is transformed into BT.2100 HLG HDR Still
         # Check T_REC[22] -> HLG_REC_VA (0x540db740)

@@ -3,26 +3,27 @@
 
 Applies the verified empirical ISP calibration and in-camera APP2 ICC injection hook
 to the Ricoh GR IV Standard Edition (China Mainland sales version) v1.11 firmware:
-  1. Cinema Green (toneId = 19 = 0x13) is 100% restored to factory original.
-  2. Slot Transformation (Target: HDR Tone / HDR色调, toneId = 0x16 = 22):
+  1. Slot Transformation (Target: HDR Tone / HDR色调, toneId = 0x16 = 22):
      - Q13 Color Matrix in dedicated ToneRecord at HLG_REC_VA: Linear Rec.709 -> Rec.2020 @ M_STD
      - Gamma Descriptor at HLG_GAM_DESC_VA: desc[4]=1, desc[5]=0, 14-bit ARIB STD-B67 HLG curve
      - Neutral Multi-Axis Table: T_MA[22] repointed to Standard neutral table (0x54049de8)
      - UI Name (Text ID 306 across all 21 languages): renamed from "HDR色调"/"HDR Tone" to "HDR"
      - UI Icon: retains official HDR Tone icon (0 changes to ICONBIN)
-  3. Safe Landing Region (0x540db200 in RTOS rodata zero padding):
+
+  2. Safe Landing Region (0x540db200 in RTOS rodata zero padding):
      - Houses ARM hook code, APP2 ICC payload, 14-bit HLG LUT, gamma descriptor,
        Q13 CCM, dedicated ToneRecord struct, and "HDR" UTF-16LE text descriptor.
-  4. In-Camera Automatic APP2 CICP ICC Profile Injection:
+  3. In-Camera Automatic APP2 CICP ICC Profile Injection:
      - Hooks ExifJpegWriter::SetupAppNInfo at 0x5380bf50 (branching to 0x540db200)
      - Checks [r1, #0x79c] == 22 (HDR mode)
      - Fixes APP7 length in m_workArea to terminate cleanly at [r4, #0x50]
      - Appends 32-byte aligned APP2 ICC_PROFILE segment (FF E2, len=576, BT.2100 HLG CICP [9, 18, 0, 1])
      - Advances [r4, #0x50] by 576 bytes so every .JPG shot in HLG mode is an HDR HLG photo straight out of camera!
-  5. Word-Sum Checksum Compensation:
+  4. Word-Sum Checksum Compensation:
      - Absorbs word delta at COMP_VA = 0x54049394 (payload 0x10610a4) so payload word-sum == 0.
-  6. Packaging:
+  5. Packaging:
      - Encodes patched payload into production-ready, flashable fwdc248b.bin container.
+
 """
 import argparse
 import hashlib
@@ -387,7 +388,7 @@ def main():
         "--target-tone-id",
         type=int,
         default=TARGET_TONE_ID,
-        help="Target Image Control slot ID to transform (default: 19 = Cinema Green)",
+        help="Target Image Control slot ID to transform (default: 22 = HDR Tone)",
     )
     parser.add_argument(
         "--manifest",

@@ -109,8 +109,8 @@ This yields a monotonic, non-decreasing 512-byte table (`256 × uint16` in `[0, 
 
 | Component | Virtual Address (`VA`) | Payload Offset | Patch Action / Content |
 | :--- | :--- | :--- | :--- |
-| **Cinema Green** | `toneId = 19` (`0x13`) | — | **100% Restored to factory original** (matrix, gamma, multi-axis, icon) |
 | **Target Slot** | `toneId = 22` (`0x16`) | — | Replaces `HDR Tone` (`HDR色调`), renamed to `"HDR"` |
+
 | **Landing Base** | `0x540db200` | `0x010f2f10` | 1456 bytes in RTOS rodata zero padding (`0x540db1aa .. 0x540df4ab`) |
 | **Hook Code** | `0x540db200` | `0x010f2f10` | 176-byte ARMv7-A `hook_app2_inject` (checks `[r1, #0x79c] == 22`) |
 | **APP2 ICC Profile**| `0x540db2b0` | `0x010f2fc0` | `ICC_PROFILE\0\x01\x01` + 532B `bt2100_hlg_cicp.icc` + 2B pad = 548B |
@@ -143,7 +143,7 @@ Verified Test Cases:
 5. `test_cicp_tag_values`: Verifies `cicp` tag contains `[9, 18, 0, 1]`.
 6. `test_littlecms_parsing`: Verifies LittleCMS / ColorSync parsing of `"Ricoh GR IV BT.2100 HLG"`.
 7. `test_jpeg_concatenation_with_swallowed_soi`: Simulates the camera's two-block DMA write, verifies swallowed SOI marker behavior, and verifies that PIL and LittleCMS extract and parse the HDR ICC profile cleanly.
-8. `test_dist_firmware_container`: Decodes `dist/fwdc248b_hlg.bin`, verifies container LZSS frames, payload word sum == `0x00000000`, verifies Cinema Green is 100% restored to official baseline, and validates slot 22 HLG configuration.
+8. `test_dist_firmware_container`: Decodes `dist/fwdc248b_hlg.bin`, verifies container LZSS frames, payload word sum == `0x00000000`, verifies other factory styles remain untouched, and validates slot 22 HLG configuration.
 
 ### 4.2 Closed-Loop Dual-OS Simulation Verification (`gr4_sim`)
 
