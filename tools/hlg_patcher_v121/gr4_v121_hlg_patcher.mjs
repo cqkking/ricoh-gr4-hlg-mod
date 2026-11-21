@@ -242,6 +242,61 @@ function containerSize(fw, streamLen) {
   const bodyEnd = HDR + streamLen;
   return bodyEnd + (4 - bodyEnd % 4) % 4 + fw.models.length + FOOTER_LEN;
 }
+function build(fw, newDecoded) {
+  if (newDecoded.length !== fw.decoded.length) throw new FirmwareError("size-mismatch", "size-changing edits are not supported");
+  if (sum32(newDecoded) !== 0) throw new FirmwareError("payload-sum-nonzero", "the payload word sum must be zero before building");
+  const frames = fw.frames;
+  const useOrig = frames.map((f) => equalRange(newDecoded, f.outStart, fw.decoded, f.outStart, f.outLen));
+  let out;
+  let streamLen;
+  for (; ; ) {
+    streamLen = 2;
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (useOrig[i]) streamLen += f.end - f.start;
+      else {
+        if (f.outLen > 32767) throw new FirmwareError("needs-compressor", `frame at 0x${f.outStart.toString(16)} needs a real compressor`);
+        streamLen += 2 + f.outLen;
+      }
+    }
+    out = new Uint8Array(containerSize(fw, streamLen));
+    out.set(fw.header, 0);
+    let p = HDR;
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (useOrig[i]) {
+        out.set(fw.raw.subarray(f.start, f.end), p);
+        p += f.end - f.start;
+      } else {
+        const prefix = 32768 | f.outLen;
+        out[p] = prefix >>> 8;
+        out[p + 1] = prefix & 255;
+        out.set(newDecoded.subarray(f.outStart, f.outStart + f.outLen), p + 2);
+        p += 2 + f.outLen;
+      }
+    }
+    out[p] = 0;
+    out[p + 1] = 0;
+    p += 2;
+    if (p !== HDR + streamLen) throw new FirmwareError("internal", "stream size computation is off");
+    const re = parseFrames(out.subarray(0, HDR + streamLen), newDecoded.length);
+    if (re.frames.length !== frames.length) throw new FirmwareError("frame-count-changed", "re-decoded stream has a different number of frames");
+    const bad = [];
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      if (!equalRange(re.decoded, f.outStart, newDecoded, f.outStart, f.outLen)) bad.push(i);
+    }
+    if (bad.length === 0) break;
+    for (const i of bad) {
+      if (!useOrig[i]) throw new FirmwareError("stored-frame-mismatch", "stored frame decoded wrong");
+      useOrig[i] = false;
+    }
+  }
+  finishContainer(out, fw, streamLen, newDecoded.length);
+  const reencoded = [];
+  for (let i = 0; i < useOrig.length; i++) if (!useOrig[i]) reencoded.push(i);
+  return { out, reencoded };
+}
 function decodeCompressedFrame(src, f, out, op) {
   if (f.stored) return -1;
   let pos = f.start + 2;
@@ -1627,6 +1682,17 @@ var TEXT_CAT_SITES = [
   [1398367964, 1398367972]
 ];
 var HOOK_SITE = 1401109032;
+var SETUP_APPN_INFO = 1401108832;
+var WRITE_CALL_SITE = 1401109272;
+var WRITE_CALL_WORD = 3959422864;
+var REWRITE_CALL_SITE = 1401109864;
+var REWRITE_CALL_WORD = 3959422716;
+var HOOK_W0_LDR_LR = 3843756036;
+var HOOK_W1_TST_200 = 3809545218;
+var HOOK_W2_OLD_LDREQ_8 = 93589512;
+var HOOK_W3_OLD_LDRNE_C = 362024972;
+var HOOK_W2_V121_LDRNE_8 = 362024968;
+var HOOK_W3_V121_LDREQ_C = 93589516;
 var HDR_SCALE_SHOOTING = 1394386920;
 var HDR_SCALE_RAW = 1394250900;
 var HDR_INTENSE_TABLES = [1407086044, 1407085500, 1407086036, 1407085712];
@@ -1650,6 +1716,16 @@ var HLG_MARKER = new Uint8Array([
   0
   // "GR4HLG121\0\0\0"
 ]);
+function buildV121HookBlock() {
+  const out = new Uint8Array(HLG_HOOK_BLOCK);
+  const dv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  if (dv.getUint32(0, true) !== HOOK_W0_LDR_LR || dv.getUint32(4, true) !== HOOK_W1_TST_200 || dv.getUint32(8, true) !== HOOK_W2_OLD_LDREQ_8 || dv.getUint32(12, true) !== HOOK_W3_OLD_LDRNE_C) {
+    throw new Error("Unexpected HLG_HOOK_BLOCK prologue; expected v1.11 LR polarity words at +0..+12");
+  }
+  dv.setUint32(8, HOOK_W2_V121_LDRNE_8, true);
+  dv.setUint32(12, HOOK_W3_V121_LDREQ_C, true);
+  return out;
+}
 function u16le2(values) {
   const out = new Uint8Array(values.length * 2);
   const dv = new DataView(out.buffer);
@@ -1697,10 +1773,6 @@ function decodeMovwMovt(loWord, hiWord, expectedReg, label) {
   }
   return (movImmediate(hiWord) << 16 | movImmediate(loWord)) >>> 0;
 }
-function decodeHookFirstWords() {
-  const dv = new DataView(HLG_HOOK.buffer, HLG_HOOK.byteOffset, 8);
-  return [dv.getUint32(0, true), dv.getUint32(4, true)];
-}
 function romVa121(va) {
   if (va >= RAM_DEST && va < RAM_DEST + RAM_LEN) {
     return RAM_SRC + (va - RAM_DEST);
@@ -1736,13 +1808,25 @@ function rtosExpectU32(rtos, va, expected, what) {
     );
   }
 }
-function isHlgHookInstalled(rtos) {
+function detectHlgHook(rtos) {
   const w = rtosReadU32(rtos, HOOK_SITE);
-  if (w >>> 24 !== 234) return false;
+  if (w >>> 24 !== 234) return { status: "none", hookVa: null };
   const target = branchTarget(HOOK_SITE, w);
-  if (target < BASE2 || target + 8 > BASE2 + rtos.length) return false;
-  const [h0, h1] = decodeHookFirstWords();
-  return rtosReadU32(rtos, target) === h0 && rtosReadU32(rtos, target + 4) === h1;
+  if (target < BASE2 || target + 16 > BASE2 + rtos.length) return { status: "none", hookVa: null };
+  const w0 = rtosReadU32(rtos, target);
+  const w1 = rtosReadU32(rtos, target + 4);
+  const w2 = rtosReadU32(rtos, target + 8);
+  const w3 = rtosReadU32(rtos, target + 12);
+  if (w0 !== HOOK_W0_LDR_LR || w1 !== HOOK_W1_TST_200) {
+    return { status: "none", hookVa: null };
+  }
+  if (w2 === HOOK_W2_V121_LDRNE_8 && w3 === HOOK_W3_V121_LDREQ_C) {
+    return { status: "v121-fixed", hookVa: target };
+  }
+  if (w2 === HOOK_W2_OLD_LDREQ_8 && w3 === HOOK_W3_OLD_LDRNE_C) {
+    return { status: "v111-inverted-bug", hookVa: target };
+  }
+  return { status: "none", hookVa: null };
 }
 function inspectFirmware(raw) {
   const v = verifyContainer(raw);
@@ -1770,12 +1854,14 @@ function inspectFirmware(raw) {
       hasRelocatedStyleTables: false,
       hasHdrGainMap: false,
       hlgInstalled: false,
+      hlgHookStatus: "none",
       hlgMarkerPresent: false,
       chosenScaleIconId: null
     };
   }
   const activeTrec = decodeMovwMovt(rtosReadU32(rtos, STYLE_TABLES[0][3]), rtosReadU32(rtos, STYLE_TABLES[0][4]), 3, "T_REC");
-  const hlgInstalled = isHlgHookInstalled(rtos);
+  const hookInfo = detectHlgHook(rtos);
+  const hlgInstalled = hookInfo.status !== "none";
   const markerTail = rtos.subarray(rtos.length - 16, rtos.length - 4);
   const hlgMarkerPresent = HLG_MARKER.every((b, idx) => markerTail[idx] === b);
   const shootWord = rtosReadU32(rtos, HDR_SCALE_SHOOTING);
@@ -1790,6 +1876,7 @@ function inspectFirmware(raw) {
     hasRelocatedStyleTables: activeTrec !== STYLE_TABLES[0][1],
     hasHdrGainMap: rtosReadU32(rtos, HDRGAIN_WRITER_SLOT_COUNT) !== HDRGAIN_NATIVE_GET_BLOCK_COUNT,
     hlgInstalled,
+    hlgHookStatus: hookInfo.status,
     hlgMarkerPresent,
     chosenScaleIconId
   };
@@ -1822,7 +1909,8 @@ async function patchHlgV121(raw) {
   const hasHdrGainMap = rtosReadU32(rtosOrig, HDRGAIN_WRITER_SLOT_COUNT) !== HDRGAIN_NATIVE_GET_BLOCK_COUNT;
   const activeTrecBefore = decodeMovwMovt(rtosReadU32(rtosOrig, STYLE_TABLES[0][3]), rtosReadU32(rtosOrig, STYLE_TABLES[0][4]), 3, "T_REC");
   const hasRelocatedStyleTables = activeTrecBefore !== STYLE_TABLES[0][1];
-  if (isHlgHookInstalled(rtosOrig)) {
+  const hookInfo = detectHlgHook(rtosOrig);
+  if (hookInfo.status === "v121-fixed") {
     return {
       alreadyPatched: true,
       baseType,
@@ -1832,7 +1920,78 @@ async function patchHlgV121(raw) {
       oldIconbinSize: iconSec.size
     };
   }
+  if (hookInfo.status === "v111-inverted-bug") {
+    rtosExpectU32(rtosOrig, WRITE_CALL_SITE, WRITE_CALL_WORD, "ExifJpegWriter::Write BL SetupAppNInfo");
+    rtosExpectU32(rtosOrig, REWRITE_CALL_SITE, REWRITE_CALL_WORD, "ExifJpegWriter::Rewrite BL SetupAppNInfo");
+    const markerTail = rtosOrig.subarray(rtosOrig.length - 16, rtosOrig.length - 4);
+    const hasMarker = HLG_MARKER.every((b, idx) => markerTail[idx] === b);
+    if (!hasMarker) {
+      throw new Error(
+        "Found legacy v1.11-polarity HLG hook without GR4HLG121 marker; please re-patch from a clean official or GRMod v1.21 firmware."
+      );
+    }
+    const newDecoded2 = new Uint8Array(fw.decoded);
+    const rtosBuf2 = newDecoded2.subarray(rtosSec.offset, rtosSec.offset + rtosSec.size);
+    const hookVa2 = hookInfo.hookVa;
+    rtosWriteU32(rtosBuf2, hookVa2 + 8, HOOK_W2_V121_LDRNE_8);
+    rtosWriteU32(rtosBuf2, hookVa2 + 12, HOOK_W3_V121_LDREQ_C);
+    const compOffset2 = rtosSec.offset + rtosSec.size - 4;
+    writeU32(newDecoded2, compOffset2, 0);
+    const comp2 = -sum32(newDecoded2) >>> 0;
+    writeU32(newDecoded2, compOffset2, comp2);
+    if (sum32(newDecoded2) !== 0) {
+      throw new Error("Internal error: upgraded payload word sum is not zero");
+    }
+    for (let i = 1; i <= 4; i++) {
+      if (newDecoded2[newDecoded2.length - i] !== fw.decoded[fw.decoded.length - i]) {
+        throw new Error("Internal error: last payload word changed during upgrade");
+      }
+    }
+    const origSecs2 = sectionsOf(fw.decoded);
+    const newSecs2 = sectionsOf(newDecoded2);
+    if (origSecs2.length !== newSecs2.length) {
+      throw new Error("Internal error: section count changed");
+    }
+    for (let i = 0; i < origSecs2.length; i++) {
+      if (origSecs2[i].name !== newSecs2[i].name) throw new Error(`Internal error: section ${origSecs2[i].name} mismatch`);
+      if (origSecs2[i].name === "RTOS") continue;
+      const newData = newDecoded2.subarray(newSecs2[i].offset, newSecs2[i].name === "RES" ? newDecoded2.length : newSecs2[i].offset + newSecs2[i].size);
+      const origData = fw.decoded.subarray(origSecs2[i].offset, origSecs2[i].name === "RES" ? fw.decoded.length : origSecs2[i].offset + origSecs2[i].size);
+      if (sum32(newData) !== sum32(origData)) {
+        throw new Error(`Internal error: section ${origSecs2[i].name} modified unexpectedly during upgrade`);
+      }
+    }
+    const built2 = build(fw, newDecoded2);
+    const verifyOut2 = verifyContainer(built2.out, newDecoded2);
+    const outFailed2 = Object.entries(verifyOut2.checks).filter(([, ok]) => !ok).map(([k]) => k);
+    if (outFailed2.length > 0) {
+      throw new Error(`Upgraded container verification failed: ${outFailed2.join(", ")}`);
+    }
+    const shootWord = rtosReadU32(rtosOrig, HDR_SCALE_SHOOTING);
+    const chosenIconId2 = (shootWord & 4293980160) >>> 0 === 3808440320 ? movImmediate(shootWord) : 800;
+    return {
+      alreadyPatched: false,
+      upgradedInPlace: true,
+      output: built2.out,
+      outputSha256: await sha256Hex(built2.out),
+      chosenIconId: chosenIconId2,
+      baseType,
+      hasHdrGainMap,
+      hasRelocatedStyleTables,
+      checks: verifyOut2.checks,
+      oldRtosSize: rtosSec.size,
+      newRtosSize: rtosSec.size,
+      oldIconbinSize: iconSec.size,
+      newIconbinSize: iconSec.size,
+      reencodedFrames: built2.reencoded.length
+    };
+  }
   rtosExpectU32(rtosOrig, HOOK_SITE, 3796619284, "SetupAppNInfo epilogue (HOOK_SITE)");
+  rtosExpectU32(rtosOrig, WRITE_CALL_SITE, WRITE_CALL_WORD, "ExifJpegWriter::Write BL SetupAppNInfo");
+  rtosExpectU32(rtosOrig, REWRITE_CALL_SITE, REWRITE_CALL_WORD, "ExifJpegWriter::Rewrite BL SetupAppNInfo");
+  if (branchTarget(WRITE_CALL_SITE, WRITE_CALL_WORD) !== SETUP_APPN_INFO || branchTarget(REWRITE_CALL_SITE, REWRITE_CALL_WORD) !== SETUP_APPN_INFO) {
+    throw new Error("Internal error: SetupAppNInfo branch targets mismatch");
+  }
   rtosExpectU32(rtosOrig, HDR_SCALE_SHOOTING, 3808440929, "HDR_SCALE_SHOOTING");
   rtosExpectU32(rtosOrig, HDR_SCALE_RAW, 3808440929, "HDR_SCALE_RAW");
   for (let i = 0; i < HDR_INTENSE_TABLES.length; i++) {
@@ -1983,7 +2142,7 @@ async function patchHlgV121(raw) {
   const hdrUtf16 = new Uint8Array([72, 0, 68, 0, 82, 0, 0, 0]);
   const textVa = appendRtos(hdrUtf16, 4);
   const textDescVa = appendRtos(concatBytes([Uint8Array.from([4, 1, 0, 0]), u32le2([textVa])]), 4);
-  const hookVa = appendRtos(HLG_HOOK_BLOCK, 16);
+  const hookVa = appendRtos(buildV121HookBlock(), 16);
   rtosBuf.set(HLG_MARKER, newRtosSize - 16);
   rtosWriteU32(rtosBuf, HOOK_SITE, branchWord(HOOK_SITE, hookVa));
   rtosWriteU32(rtosBuf, HDR_SCALE_SHOOTING, movWord(3, chosenIconId));
@@ -2122,7 +2281,8 @@ async function runCli() {
     console.log(`RTOS / ICONBIN sizes    : 0x${info.rtosSize.toString(16)} / 0x${info.iconbinSize.toString(16)} (RES files: ${info.resCount})`);
     console.log(`Relocated style tables  : ${info.hasRelocatedStyleTables}`);
     console.log(`GRMod HDR Gain Map      : ${info.hasHdrGainMap}`);
-    console.log(`HLG Photo installed     : ${info.hlgInstalled ? "YES" : "NO"} (marker=${info.hlgMarkerPresent}, scaleIconId=${info.chosenScaleIconId ?? "n/a"})`);
+    const hookDesc = info.hlgHookStatus === "v111-inverted-bug" ? "YES [NEEDS FIX: hook=v111-inverted-bug, Write/Rewrite LR polarity inverted]" : info.hlgInstalled ? "YES" : "NO";
+    console.log(`HLG Photo installed     : ${hookDesc} (hook=${info.hlgHookStatus}, marker=${info.hlgMarkerPresent}, scaleIconId=${info.chosenScaleIconId ?? "n/a"})`);
     return info.isGr4V121 ? 0 : 1;
   }
   let inputPath;
@@ -2169,13 +2329,16 @@ async function runCli() {
   }
   mkdirSync(dirname(resolvedOut), { recursive: true });
   writeFileSync(resolvedOut, res.output);
-  console.log("=== GR IV v1.21 BT.2100 HLG Photo Patch Complete ===");
+  console.log(
+    res.upgradedInPlace ? "=== GR IV v1.21 BT.2100 HLG Photo Hook Fix [UPGRADED IN-PLACE] ===" : "=== GR IV v1.21 BT.2100 HLG Photo Patch Complete ==="
+  );
   console.log(`Input           : ${resolvedIn} (${res.baseType}${res.hasRelocatedStyleTables ? ", relocated style tables" : ""})`);
   console.log(`Output          : ${resolvedOut} (${res.output.length.toLocaleString()} bytes)`);
   console.log(`Output SHA-256  : ${res.outputSha256}`);
   console.log(`RTOS size       : 0x${res.oldRtosSize.toString(16)} -> 0x${res.newRtosSize.toString(16)}`);
   console.log(`ICONBIN size    : 0x${res.oldIconbinSize.toString(16)} -> 0x${res.newIconbinSize.toString(16)}`);
   console.log(`Scale icon ID   : ${res.chosenIconId} ([OFF, 1-bar, 2-bars])`);
+  console.log(`APP2 hook       : Write/Rewrite LR bit fixed for v1.21 (ldrne #8 / ldreq #0xc)`);
   console.log(`Frames re-emit  : ${res.reencodedFrames}`);
   console.log(`Self-checks     : ALL PASSED (${Object.keys(res.checks).length}/${Object.keys(res.checks).length})`);
   console.log('Slot 22 behavior: Named "HDR", Rec.2020 + ARIB STD-B67 + CICP ICC, Level 0 = OFF bypass.');
