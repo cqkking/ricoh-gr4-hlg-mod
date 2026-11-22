@@ -22,11 +22,12 @@ if not exist "%PATCHER%" (
 set "INPUT_FILE=%~1"
 if "%INPUT_FILE%"=="" (
     echo ====================================================================
-    echo   Ricoh GR IV v1.21 BT.2100 HLG Photo 定向补丁工具
-    echo   支持：v1.21 官方原版固件 或 经 GRMod 0.8.15/0.8.16+ 导出的 v1.21 固件
+    echo   Ricoh GR IV v1.21 BT.2100 HLG Photo 定向补丁 [BT.2408 校准版 - 推荐]
+    echo   支持：v1.21 官方原版固件 或 GRMod 0.8.15/0.8.16+ 导出的 v1.21 固件
+    echo   特点：真实 Rec.2020 HLG（暗部/中灰对齐标准，高光延伸至 HDR，中性 T_MA）
     echo ====================================================================
     echo 请在弹出的文件窗口中选择要打入 HLG Photo 功能的 fwdc248b.bin 文件...
-    for /f "usebackq delims=" %%F in (`powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = '选择 GR IV v1.21 固件 (fwdc248b.bin)'; $d.Filter = 'GR IV Firmware (*.bin)|*.bin|All Files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"`) do (
+    for /f "usebackq delims=" %%F in (`powershell -NoProfile -STA -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Title = '选择 GR IV v1.21 固件 (fwdc248b.bin) [BT.2408 校准 HLG 版]'; $d.Filter = 'GR IV Firmware (*.bin)|*.bin|All Files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileName }"`) do (
         set "INPUT_FILE=%%F"
     )
 )
@@ -38,11 +39,12 @@ if "%INPUT_FILE%"=="" (
 )
 
 echo.
+echo 补丁模式: calibrated (BT.2408 校准标准 HLG 版)
 echo 输入固件: "%INPUT_FILE%"
 echo 输出固件: "%DEFAULT_OUT%"
 echo.
 
-node "%PATCHER%" "%INPUT_FILE%" "%DEFAULT_OUT%"
+node "%PATCHER%" --mode calibrated "%INPUT_FILE%" "%DEFAULT_OUT%"
 set "RC=%ERRORLEVEL%"
 
 echo.

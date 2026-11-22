@@ -2,8 +2,10 @@
 
 本项目为 **理光 Ricoh GR IV (`fwdc248b.bin`)** 的机内直出 **BT.2100 HLG HDR 照片** 固件修改项目，当前提供两条版本支持路径：
 
-- **Ricoh GR IV v1.21（推荐）**：独立后置补丁工具 + Windows 一键批处理（[GR4_v121_HLG_Patcher.bat](./GR4_v121_HLG_Patcher.bat)），同时支持 **官方原版 v1.21** 与 **GRMod（0.8.15 / 0.8.16 / 后续版本）已构建的 v1.21 定制固件**。
-  > **v1.21 静态与容器验证状态**：官方原版 v1.21 与含多插件（XPAN、额外风格槽位、Halation、HDR Gain Map 等）的 GRMod v1.21 导出固件，均已通过 **9/9 容器与校验和自检**、`tools/fw_container.py info`（`Container : VALID`）及二进制反汇编/结构检查（`--inspect`）；v1.21 真机实拍待进一步硬件验证。
+- **Ricoh GR IV v1.21（推荐）**：独立后置补丁工具 + 双模式 Windows 一键批处理（[GR4_v121_HLG_Patcher.bat](./GR4_v121_HLG_Patcher.bat) / [GR4_v121_HLG_Patcher_Classic.bat](./GR4_v121_HLG_Patcher_Classic.bat)），同时支持 **官方原版 v1.21** 与 **GRMod（0.8.15 / 0.8.16 / 后续版本）已构建的 v1.21 定制固件**。
+  > **v1.21 验证状态**：
+  > - 已完成 v1.21 `SetupAppNInfo` 调用点返回地址极性修复（`Write` `lr & 0x200` 与 v1.11/v1.20 反转），实机测试 Slot 22 `"HDR"`、Level 0 `OFF` 滑块及 APP2 BT.2100 HLG CICP 注入均正常触发。
+  > - 提供 **`calibrated`（BT.2408 校准标准 HLG 版）** 与 **`classic`（经典 v1.11/v1.20 同款观感版）** 两种模式，均已通过 **9/9 容器与校验和自检**、`tools/fw_container.py info`（`Container : VALID`）、交叉模式防误刷检查及 Capstone 反汇编/表项检查。
 - **Ricoh GR IV v1.11（历史基线 / Python 工具链）**：基于 v1.11 官方原版的完整 Python 构建、仿真与审计工具链。
   > **v1.11 硬件实机测试状态：已验证通过 (PASS)**  
   > 经真机刷写验证：机内取景预览、回放正常；通过手机 RICOH GR World App 导出至支持 HDR/EDR 的设备（如 iPhone）原生触发高动态范围显示；导出至普通 SDR 笔记本显示色彩正常且文件完整无损。
@@ -21,25 +23,30 @@
   - 经 **GRMod（0.8.15 / 0.8.16 / 后续版本）** 导出的任意 v1.21 固件（无论是否启用了 XPAN 65:24、额外胶片模拟槽位、柔焦/Halation、时间戳、黑白预设解锁、直闪模式、HDR Gain Map、曝光预览、8 ADJ 槽位等）
 - **前置依赖**：仅需 **Node.js v18+**（[GR4_v121_HLG_Patcher.bat](./GR4_v121_HLG_Patcher.bat) 调用的 [gr4_v121_hlg_patcher.mjs](./tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs) 为零依赖独立 ESM 包，无需 `npm install` 或 Python）。
 
-### 2. Windows 一键批处理（拖拽 / 双击）
+### 2. 双模式 Windows 一键批处理（拖拽 / 双击）
 
-1. 将待修改的 v1.21 `fwdc248b.bin`（官方原版或 GRMod 导出文件）**直接拖拽**到仓库根目录的 [`GR4_v121_HLG_Patcher.bat`](./GR4_v121_HLG_Patcher.bat) 上；或者**双击运行**并在弹出的文件选择窗口中选中 `.bin` 文件。
-2. 等待命令行自动完成注入与 9/9 自检，生成的可刷机固件将保存为：
-   ```text
-   output\fwdc248b.bin
-   ```
-3. 将 `output\fwdc248b.bin` 复制到 SD 卡根目录并按理光常规刷机流程升级（关机状态下按住 `Playback` 键开机确认升级）。
+针对不同用户的观感偏好，提供两个一键批处理入口（均可直接把 v1.21 `fwdc248b.bin` 拖到脚本上，或双击在文件窗口中选择）：
+
+| 批处理脚本 | 模式 (`--mode`) | 输出路径 | 机内特性与成片观感 |
+| :--- | :--- | :--- | :--- |
+| **[GR4_v121_HLG_Patcher.bat](./GR4_v121_HLG_Patcher.bat)** *(推荐)* | `calibrated` | `output\fwdc248b.bin` | **BT.2408 校准标准 HLG 版**：真实 Rec.2020 Q13 矩阵 + 按 BT.2408 重新校准的 14-bit HLG LUT（暗部黑位与中灰对齐原厂 Standard，高光平滑延伸至 HDR 峰值）+ 原厂中性 `T_MA[22]`（`0x54082b38`）+ APP2 CICP ICC。 |
+| **[GR4_v121_HLG_Patcher_Classic.bat](./GR4_v121_HLG_Patcher_Classic.bat)** | `classic` | `output\classic\fwdc248b.bin` | **经典 v1.11 / v1.20 同款观感版**：完整复刻 v1.11/v1.20 实机运行时路径——保留原厂 Standard 矩阵/曲线/中性多轴表不变（机身预览/回放与 Standard 完全一致不偏灰），仅重命名 `"HDR"`、开启 Level 0 `OFF` 刻度并注入 APP2 HLG CICP ICC（iPhone 强反差高饱和观感）。 |
+
+生成后将对应的 `fwdc248b.bin` 复制到 SD 卡根目录并按理光常规刷机流程升级（关机状态下按住 `Playback` 键开机确认升级）。
 
 ### 3. 跨平台命令行用法（Windows / macOS / Linux）
 
 ```bash
-# 为官方原版或 GRMod 导出的 v1.21 固件注入 HLG Photo
-node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs <input.bin> [output.bin]
+# 1) 默认 / BT.2408 校准标准 HLG 版 (--mode calibrated)
+node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --mode calibrated <input.bin> [output.bin]
 
-# 或通过 -o 指定输出路径（未指定时默认生成 <input>_hlg.bin）
-node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs fwdc248b.bin -o output/fwdc248b.bin
+# 2) 经典 v1.11/v1.20 同款观感版 (--mode classic，也可简写为 --classic)
+node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --mode classic <input.bin> [output.bin]
 
-# 检查任意固件的容器有效性、v1.21 识别、GRMod 扩容状态、HDR Gain Map 与 HLG 注入状态
+# 或通过 -o 指定输出路径（未指定时 calibrated 生成 <input>_hlg.bin，classic 生成 <input>_hlg_classic.bin）
+node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --classic fwdc248b.bin -o output/classic/fwdc248b.bin
+
+# 检查任意固件的容器有效性、v1.21 识别、安装模式 (calibrated/classic)、Hook 状态与 HDR Gain Map 共存状态
 node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --inspect output/fwdc248b.bin
 ```
 
@@ -47,14 +54,14 @@ node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --inspect output/fwdc248b.b
 
 - **与 GRMod 版本彻底解耦**：
   - 自动识别官方原版（`official`）与 GRMod 扩容布局（`grmod-grown`）：在现有 `05_RTOS.bin` 尾部动态追加 `+1 frame`（`0x6000` 字节），在 `06_ICONBIN.bin` 尾部追加 `+4 frames`（`0x18000` 字节），完整保留 `RES`、`LINUX`、`INITFS` 与全部非 HLG 分区零改动。
-  - 同时写入原生与 GRMod 重定位的 `T_REC` / `T_MA` / `T_GAM` 风格表，并完整覆盖全部 **3 组机内色彩变体（`VARIANTS = 3`）**；自动扫描空闲图标槽位（优先 `800..989`）写入自适应合成刻度图并更新图标查表边界，避免覆盖 GRMod 新增槽位。
+  - `calibrated` 模式下同时写入原生与 GRMod 重定位的 `T_REC` / `T_MA` / `T_GAM` 风格表，并完整覆盖全部 **3 组机内色彩变体（`VARIANTS = 3`）**；`classic` 模式下则保留 Slot 22 原厂三张风格表不动，仅注入 `"HDR"` 名称、Level 0 `OFF` 刻度与 APP2 CICP ICC Hook；自动扫描空闲图标槽位（优先 `800..989`）写入自适应合成刻度图并更新图标查表边界，避免覆盖 GRMod 新增槽位。
   - 仅修改 HDR 专用强度条与 ASCII 格式化判断站点（与 `halation-ui` 零重叠冲突）。
 - **Level 0 `OFF` 旁路与原厂风格 `400×60` 三段刻度条**：
   - Slot 22（`HDR Tone` / `HDR色调`，v1.21 Text ID `323`）全球 21 种语言统一更名为 `"HDR"`。
   - 扩展 `HDR_INTENSE` 等级映射为 `[0, 1, 2, 0]` 并将 ASCII 格式化门限由 `0..2` 放宽至支持 `0`，实时读取机内原生图标 `0x261` 与 `0xd2` 合成为带 `OFF / 1-bar / 2-bars` 刻度的 `400×60` 图标，同时挂接**拍摄菜单**（`0x531ca7e8`）与 **RAW 机内显影菜单**（`0x531a9494`）。
 - **多重安全防护**：
-  - 严格验证容器帧头、GR IV v1.21 RAM 搬移描述块及全部 10 处 Hook/表特征字（若传入 v1.11/v1.20 等非 v1.21 固件将直接报错中止且不写入任何输出）。
-  - 在 `RTOS` 尾部写入 `GR4HLG121` 标记实现幂等检测（重复运行会 `[SKIP]` 跳过）。
+  - 严格验证容器帧头、GR IV v1.21 RAM 搬移描述块、`Write`/`Rewrite` 调用指令及全部目标特征字（若传入 v1.11/v1.20 等非 v1.21 固件将直接报错中止且不写入任何输出）。
+  - 在 `RTOS` 尾部写入模式标记（`GR4HLG121A` / `GR4HLG121B`）：同模式重复运行自动 `[SKIP]` 跳过，跨模式切换或遇旧版 Hook 时会安全拦截并提示使用干净底包重打。
   - 写入输出前自动平衡 Payload 32-bit Word Sum 为 `0x00000000` 并通过 9/9 容器自检。
 - **与 GRMod `HDR Gain Map` 共存提示**：
   - 本工具可与 GRMod 内置的 `HDR Gain Map` 安全共存于同一份固件。当你希望使用 **Slot 22（`影像控制 -> HDR`）直出 BT.2100 HLG** 拍摄时，请在相机菜单中关闭 `[拍摄菜单 > HDR]` 开关，以避免 Gain Map 与 HLG 管线叠加。
@@ -126,7 +133,8 @@ node tools/hlg_patcher_v121/gr4_v121_hlg_patcher.mjs --inspect output/fwdc248b.b
 
 ```text
 .
-├── GR4_v121_HLG_Patcher.bat              # [v1.21] Windows 拖拽 / 文件选择器一键补丁脚本
+├── GR4_v121_HLG_Patcher.bat              # [v1.21] Windows 一键补丁 [BT.2408 校准标准 HLG 版 - 推荐]
+├── GR4_v121_HLG_Patcher_Classic.bat      # [v1.21] Windows 一键补丁 [经典 v1.11/v1.20 同款观感版]
 ├── analysis/                             # 静态逆向审计与补丁清单（v1.11）
 │   ├── hlg_patch_manifest.json           # 27 项机器可读原子补丁清单（Gate 1 审计依据）
 │   └── sim_verification_report.md        # 双系统闭环仿真与固件差异回归报告

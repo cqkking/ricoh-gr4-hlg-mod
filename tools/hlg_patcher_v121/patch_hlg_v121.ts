@@ -13,14 +13,16 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, basename, extname, join, resolve } from 'node:path';
 import {
-  FRAME_SIZE, Firmware, build, buildGrown, sectionsOf, sha256Hex, sum32, verifyContainer,
+  FRAME_SIZE, Firmware, buildGrown, sectionsOf, sha256Hex, sum32, verifyContainer,
 } from '../../Ricoh-GRMod/core/src/fw/container';
 import {
   branchTarget, branchWord, movImmediate, movWord,
 } from '../../Ricoh-GRMod/core/src/fw/gr4v121/aspect/arm';
 import {
-  HLG_CURVE, HLG_HOOK, HLG_HOOK_BLOCK, HLG_MATRIX, createHdrScale,
+  HLG_HOOK_BLOCK, HLG_MATRIX, createHdrScale,
 } from '../../Ricoh-GRMod/core/src/fw/aspect/hlg';
+import { GR4_CAMERA } from '../../Ricoh-GRMod/core/src/color/camera';
+import { srgbToLin } from '../../Ricoh-GRMod/core/src/color/math';
 
 // -----------------------------------------------------------------------------
 // Verified Ricoh GR IV v1.21 constants (SHA-256 bf4d6c35f6da1c16ed5f2943af570eab8fef326f7501a2b3ce5413fa55ec5c99)
@@ -50,9 +52,11 @@ const EXTENDED_ICON_SLOTS = 1280;
 const NATIVE_SCALE_ICON = 0x261;        // 609 (400x60)
 const NATIVE_TONING_SCALE_ICON = 0xd2;  // 210 (400x60)
 
-const STD_REC_VA = 0x5501bd58;      // T_REC[11]
-const STD_MA_DESC_VA = 0x54082290;  // T_MA[11]
-const GAMMA_DESC_WORD0 = 0x540b6590;
+const STD_REC_VA = 0x5501bd58;             // T_REC[11]
+const STD_MA_DESC_VA = 0x54082290;         // T_MA[11]
+const STOCK_NEUTRAL_MA_DESC_VA = 0x54082b38; // T_MA[0]/T_MA[22] factory neutral/bypass descriptor
+const GAMMA_DESC_WORD0 = 0x540b6590;       // T_GAM[11][0] base-gamma descriptor
+const STOCK_STD_GAM_DESC_VA = 0x540b6168;  // T_GAM[11]/T_GAM[22] factory descriptor
 
 const STYLE_TABLES: readonly [string, number, number, number, number][] = [
   ['T_REC', 0x55054800, 0x5394f578, 0x5394f57c, 0x5394f584],
@@ -99,9 +103,50 @@ const HDR_INTENSE_ASCII_CMP = 0x533ab578;
 const HDRGAIN_WRITER_SLOT_COUNT = 0x53fdf5a0 + 10 * 4;
 const HDRGAIN_NATIVE_GET_BLOCK_COUNT = 0x53833744;
 
-const HLG_MARKER = new Uint8Array([
+const HLG_MARKER_CALIBRATED = new Uint8Array([
+  0x47, 0x52, 0x34, 0x48, 0x4c, 0x47, 0x31, 0x32, 0x31, 0x41, 0x00, 0x00, // "GR4HLG121A\0\0"
+]);
+const HLG_MARKER_CLASSIC = new Uint8Array([
+  0x47, 0x52, 0x34, 0x48, 0x4c, 0x47, 0x31, 0x32, 0x31, 0x42, 0x00, 0x00, // "GR4HLG121B\0\0"
+]);
+const HLG_MARKER_LEGACY = new Uint8Array([
   0x47, 0x52, 0x34, 0x48, 0x4c, 0x47, 0x31, 0x32, 0x31, 0x00, 0x00, 0x00, // "GR4HLG121\0\0\0"
 ]);
+
+export type HlgMode = 'calibrated' | 'classic';
+export type InstalledHlgMode = HlgMode | 'legacy-bright-hlg' | 'none';
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((v, idx) => v === b[idx]);
+}
+
+function buildCalibratedHlgCurveV121(): Uint8Array {
+  // BT.2408 Standard-matched shadow/midtone + smooth HDR highlight extension (peak E = 1.00, knee = 2.5)
+  const a = 0.17883277;
+  const b = 1.0 - 4.0 * a;
+  const c = 0.5 - a * Math.log(4.0 * a);
+  const eRef = (Math.exp((0.75 - c) / a) + b) / 12.0; // hlgInvOetf(0.75) ~= 0.26496256
+  const linMax = GR4_CAMERA.Sinv(1.0);
+
+  const vals: number[] = [];
+  let run = 0;
+  for (let i = 0; i < 256; i++) {
+    const bi = (i * 64) / 16383.0;
+    const ys = srgbToLin(bi);
+    const linNorm = GR4_CAMERA.Sinv(bi) / linMax;
+    const e = Math.min(
+      1.0,
+      Math.max(0.0, eRef * Math.pow(ys, 1.0 / 1.2) + (1.0 - eRef) * Math.pow(linNorm, 2.5)),
+    );
+    const y = e <= 0.0 ? 0.0 : e <= 1.0 / 12.0 ? Math.sqrt(3.0 * e) : a * Math.log(12.0 * e - b) + c;
+    let val = Math.round(y * 16383.0);
+    if (val < run) val = run;
+    if (val > 16383) val = 16383;
+    run = val;
+    vals.push(val);
+  }
+  return u16le(vals);
+}
 
 function buildV121HookBlock(): Uint8Array {
   const out = new Uint8Array(HLG_HOOK_BLOCK);
@@ -184,6 +229,7 @@ export interface InspectInfo {
   hasRelocatedStyleTables: boolean;
   hasHdrGainMap: boolean;
   hlgInstalled: boolean;
+  hlgMode: InstalledHlgMode;
   hlgHookStatus: HlgHookStatus;
   hlgMarkerPresent: boolean;
   chosenScaleIconId: number | null;
@@ -250,6 +296,29 @@ function detectHlgHook(rtos: Uint8Array): { status: HlgHookStatus; hookVa: numbe
   return { status: 'none', hookVa: null };
 }
 
+function detectMarkerMode(rtos: Uint8Array): { mode: InstalledHlgMode; markerPresent: boolean } {
+  const tail = rtos.subarray(rtos.length - 16, rtos.length - 4);
+  if (bytesEqual(tail, HLG_MARKER_CALIBRATED)) return { mode: 'calibrated', markerPresent: true };
+  if (bytesEqual(tail, HLG_MARKER_CLASSIC)) return { mode: 'classic', markerPresent: true };
+  if (bytesEqual(tail, HLG_MARKER_LEGACY)) return { mode: 'legacy-bright-hlg', markerPresent: true };
+  return { mode: 'none', markerPresent: false };
+}
+
+function resolveInstalledMode(
+  rtos: Uint8Array,
+  hookStatus: HlgHookStatus,
+  markerInfo: { mode: InstalledHlgMode; markerPresent: boolean },
+): InstalledHlgMode {
+  if (hookStatus === 'none') return 'none';
+  if (markerInfo.mode !== 'none') return markerInfo.mode;
+  if (hookStatus === 'v111-inverted-bug') return 'legacy-bright-hlg';
+  const tGam = STYLE_TABLES[2];
+  const stride = rtosReadU32(rtos, tGam[2]) & 0xff;
+  const activeBase = decodeMovwMovt(rtosReadU32(rtos, tGam[3]), rtosReadU32(rtos, tGam[4]), 3, 'T_GAM');
+  const gamV1 = rtosReadU32(rtos, activeBase + 4 * (stride + TARGET_TONE_ID));
+  return gamV1 === STOCK_STD_GAM_DESC_VA ? 'classic' : 'calibrated';
+}
+
 export function inspectFirmware(raw: Uint8Array): InspectInfo {
   const v = verifyContainer(raw);
   const validContainer = Object.values(v.checks).every((ok) => ok === true);
@@ -283,6 +352,7 @@ export function inspectFirmware(raw: Uint8Array): InspectInfo {
       hasRelocatedStyleTables: false,
       hasHdrGainMap: false,
       hlgInstalled: false,
+      hlgMode: 'none',
       hlgHookStatus: 'none',
       hlgMarkerPresent: false,
       chosenScaleIconId: null,
@@ -292,8 +362,8 @@ export function inspectFirmware(raw: Uint8Array): InspectInfo {
   const activeTrec = decodeMovwMovt(rtosReadU32(rtos, STYLE_TABLES[0][3]), rtosReadU32(rtos, STYLE_TABLES[0][4]), 3, 'T_REC');
   const hookInfo = detectHlgHook(rtos);
   const hlgInstalled = hookInfo.status !== 'none';
-  const markerTail = rtos.subarray(rtos.length - 16, rtos.length - 4);
-  const hlgMarkerPresent = HLG_MARKER.every((b, idx) => markerTail[idx] === b);
+  const markerInfo = detectMarkerMode(rtos);
+  const hlgMode = resolveInstalledMode(rtos, hookInfo.status, markerInfo);
   const shootWord = rtosReadU32(rtos, HDR_SCALE_SHOOTING);
   const chosenScaleIconId = (shootWord & 0xfff0f000) >>> 0 === 0xe3003000 ? movImmediate(shootWord) : null;
 
@@ -307,15 +377,16 @@ export function inspectFirmware(raw: Uint8Array): InspectInfo {
     hasRelocatedStyleTables: activeTrec !== STYLE_TABLES[0][1],
     hasHdrGainMap: rtosReadU32(rtos, HDRGAIN_WRITER_SLOT_COUNT) !== HDRGAIN_NATIVE_GET_BLOCK_COUNT,
     hlgInstalled,
+    hlgMode,
     hlgHookStatus: hookInfo.status,
-    hlgMarkerPresent,
+    hlgMarkerPresent: markerInfo.markerPresent,
     chosenScaleIconId,
   };
 }
 
 export interface PatchResult {
   alreadyPatched: boolean;
-  upgradedInPlace?: boolean;
+  mode: HlgMode;
   output?: Uint8Array;
   outputSha256?: string;
   chosenIconId?: number;
@@ -330,7 +401,7 @@ export interface PatchResult {
   reencodedFrames?: number;
 }
 
-export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
+export async function patchHlgV121(raw: Uint8Array, mode: HlgMode = 'calibrated'): Promise<PatchResult> {
   const v = verifyContainer(raw);
   const failedChecks = Object.entries(v.checks).filter(([, ok]) => !ok).map(([k]) => k);
   if (failedChecks.length > 0) {
@@ -370,90 +441,32 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
   const activeTrecBefore = decodeMovwMovt(rtosReadU32(rtosOrig, STYLE_TABLES[0][3]), rtosReadU32(rtosOrig, STYLE_TABLES[0][4]), 3, 'T_REC');
   const hasRelocatedStyleTables = activeTrecBefore !== STYLE_TABLES[0][1];
 
-  // 2. Idempotency / in-place upgrade check
+  // 2. Idempotency / existing-patch check
   const hookInfo = detectHlgHook(rtosOrig);
+  const markerInfo = detectMarkerMode(rtosOrig);
+  const installedMode = resolveInstalledMode(rtosOrig, hookInfo.status, markerInfo);
+
   if (hookInfo.status === 'v121-fixed') {
-    return {
-      alreadyPatched: true,
-      baseType,
-      hasHdrGainMap,
-      hasRelocatedStyleTables,
-      oldRtosSize: rtosSec.size,
-      oldIconbinSize: iconSec.size,
-    };
+    if (installedMode === mode) {
+      return {
+        alreadyPatched: true,
+        mode,
+        baseType,
+        hasHdrGainMap,
+        hasRelocatedStyleTables,
+        oldRtosSize: rtosSec.size,
+        oldIconbinSize: iconSec.size,
+      };
+    }
+    throw new Error(
+      `Firmware already has HLG mode "${installedMode}" installed. To switch to "${mode}", please run on a clean official or GRMod v1.21 fwdc248b.bin.`,
+    );
   }
 
   if (hookInfo.status === 'v111-inverted-bug') {
-    rtosExpectU32(rtosOrig, WRITE_CALL_SITE, WRITE_CALL_WORD, 'ExifJpegWriter::Write BL SetupAppNInfo');
-    rtosExpectU32(rtosOrig, REWRITE_CALL_SITE, REWRITE_CALL_WORD, 'ExifJpegWriter::Rewrite BL SetupAppNInfo');
-    const markerTail = rtosOrig.subarray(rtosOrig.length - 16, rtosOrig.length - 4);
-    const hasMarker = HLG_MARKER.every((b, idx) => markerTail[idx] === b);
-    if (!hasMarker) {
-      throw new Error(
-        'Found legacy v1.11-polarity HLG hook without GR4HLG121 marker; please re-patch from a clean official or GRMod v1.21 firmware.',
-      );
-    }
-
-    const newDecoded = new Uint8Array(fw.decoded);
-    const rtosBuf = newDecoded.subarray(rtosSec.offset, rtosSec.offset + rtosSec.size);
-    const hookVa = hookInfo.hookVa!;
-    rtosWriteU32(rtosBuf, hookVa + 8, HOOK_W2_V121_LDRNE_8);
-    rtosWriteU32(rtosBuf, hookVa + 12, HOOK_W3_V121_LDREQ_C);
-
-    const compOffset = rtosSec.offset + rtosSec.size - 4;
-    writeU32(newDecoded, compOffset, 0);
-    const comp = (-sum32(newDecoded)) >>> 0;
-    writeU32(newDecoded, compOffset, comp);
-
-    if (sum32(newDecoded) !== 0) {
-      throw new Error('Internal error: upgraded payload word sum is not zero');
-    }
-    for (let i = 1; i <= 4; i++) {
-      if (newDecoded[newDecoded.length - i] !== fw.decoded[fw.decoded.length - i]) {
-        throw new Error('Internal error: last payload word changed during upgrade');
-      }
-    }
-    const origSecs = sectionsOf(fw.decoded);
-    const newSecs = sectionsOf(newDecoded);
-    if (origSecs.length !== newSecs.length) {
-      throw new Error('Internal error: section count changed');
-    }
-    for (let i = 0; i < origSecs.length; i++) {
-      if (origSecs[i].name !== newSecs[i].name) throw new Error(`Internal error: section ${origSecs[i].name} mismatch`);
-      if (origSecs[i].name === 'RTOS') continue;
-      const newData = newDecoded.subarray(newSecs[i].offset, newSecs[i].name === 'RES' ? newDecoded.length : newSecs[i].offset + newSecs[i].size);
-      const origData = fw.decoded.subarray(origSecs[i].offset, origSecs[i].name === 'RES' ? fw.decoded.length : origSecs[i].offset + origSecs[i].size);
-      if (sum32(newData) !== sum32(origData)) {
-        throw new Error(`Internal error: section ${origSecs[i].name} modified unexpectedly during upgrade`);
-      }
-    }
-
-    const built = build(fw, newDecoded);
-    const verifyOut = verifyContainer(built.out, newDecoded);
-    const outFailed = Object.entries(verifyOut.checks).filter(([, ok]) => !ok).map(([k]) => k);
-    if (outFailed.length > 0) {
-      throw new Error(`Upgraded container verification failed: ${outFailed.join(', ')}`);
-    }
-
-    const shootWord = rtosReadU32(rtosOrig, HDR_SCALE_SHOOTING);
-    const chosenIconId = (shootWord & 0xfff0f000) >>> 0 === 0xe3003000 ? movImmediate(shootWord) : 800;
-
-    return {
-      alreadyPatched: false,
-      upgradedInPlace: true,
-      output: built.out,
-      outputSha256: await sha256Hex(built.out),
-      chosenIconId,
-      baseType,
-      hasHdrGainMap,
-      hasRelocatedStyleTables,
-      checks: verifyOut.checks,
-      oldRtosSize: rtosSec.size,
-      newRtosSize: rtosSec.size,
-      oldIconbinSize: iconSec.size,
-      newIconbinSize: iconSec.size,
-      reencodedFrames: built.reencoded.length,
-    };
+    throw new Error(
+      `Firmware has an older HLG patch (${installedMode}, hook=v111-inverted-bug). Please re-patch from a clean official or GRMod v1.21 fwdc248b.bin using --mode ${mode}.`,
+    );
   }
 
   // 3. Verify all HLG target sites, SetupAppNInfo Write/Rewrite callers & Standard table entries
@@ -473,6 +486,7 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
   rtosExpectU32(rtosOrig, HDR_INTENSE_ASCII_CMP, 0x0a00000d, 'HDR_INTENSE_ASCII_CMP');
   rtosExpectU32(rtosOrig, STYLE_TABLES[0][1] + TONE_STANDARD * 4, STD_REC_VA, 'T_REC[11] Standard');
   rtosExpectU32(rtosOrig, STYLE_TABLES[1][1] + TONE_STANDARD * 4, STD_MA_DESC_VA, 'T_MA[11] Standard');
+  rtosExpectU32(rtosOrig, STYLE_TABLES[1][1] + TARGET_TONE_ID * 4, STOCK_NEUTRAL_MA_DESC_VA, 'T_MA[22] factory neutral');
 
   // 4. Prepare grown RTOS (+1 frame = 0x6000) & ICONBIN (+4 frames = 0x18000)
   const oldRtosSize = rtosSec.size;
@@ -627,15 +641,19 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
   const scaleDescVa = appendRtos(concatBytes([u16le([1, 400, 60, 0]), u32le([oldIconSize / 4])]), 16);
   rtosWriteU32(rtosBuf, iconCatalogVa + chosenIconId * 4, scaleDescVa);
 
-  // 7. Append HLG curve, gamma descriptor, matrix, ToneRecord, "HDR" label & descriptor, APP2 hook
-  const curveVa = appendRtos(HLG_CURVE, 256);
-  const gamDescVa = appendRtos(u32le([GAMMA_DESC_WORD0, 1, curveVa, curveVa, curveVa]), 4);
-  const matrixVa = appendRtos(HLG_MATRIX, 4);
+  // 7. Append (mode === 'calibrated') HLG curve, gamma descriptor, matrix, ToneRecord + "HDR" label & APP2 hook
+  let recVa = 0;
+  let gamDescVa = 0;
+  if (mode === 'calibrated') {
+    const curveVa = appendRtos(buildCalibratedHlgCurveV121(), 256);
+    gamDescVa = appendRtos(u32le([GAMMA_DESC_WORD0, 1, curveVa, curveVa, curveVa]), 4);
+    const matrixVa = appendRtos(HLG_MATRIX, 4);
 
-  const stdRec = rtosReadBytes(rtosBuf, STD_REC_VA, 84);
-  const recBytes = new Uint8Array(stdRec);
-  writeU32(recBytes, 4, matrixVa);
-  const recVa = appendRtos(recBytes, 4);
+    const stdRec = rtosReadBytes(rtosBuf, STD_REC_VA, 84);
+    const recBytes = new Uint8Array(stdRec);
+    writeU32(recBytes, 4, matrixVa);
+    recVa = appendRtos(recBytes, 4);
+  }
 
   const hdrUtf16 = new Uint8Array([0x48, 0x00, 0x44, 0x00, 0x52, 0x00, 0x00, 0x00]); // "HDR\0"
   const textVa = appendRtos(hdrUtf16, 4);
@@ -643,10 +661,10 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
 
   const hookVa = appendRtos(buildV121HookBlock(), 16);
 
-  // Stamp marker right before trailing checksum compensation word
-  rtosBuf.set(HLG_MARKER, newRtosSize - 16);
+  // Stamp mode marker right before trailing checksum compensation word
+  rtosBuf.set(mode === 'calibrated' ? HLG_MARKER_CALIBRATED : HLG_MARKER_CLASSIC, newRtosSize - 16);
 
-  // 8. Patch hooks, sliders, tables, all 3 variants of style tables (native + relocated), and 21 languages
+  // 8. Patch hooks, sliders, tables, (calibrated: all 3 variants of style tables), and 21 languages
   rtosWriteU32(rtosBuf, HOOK_SITE, branchWord(HOOK_SITE, hookVa));
   rtosWriteU32(rtosBuf, HDR_SCALE_SHOOTING, movWord(3, chosenIconId));
   rtosWriteU32(rtosBuf, HDR_SCALE_RAW, movWord(3, chosenIconId));
@@ -655,27 +673,29 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
   }
   rtosWriteU32(rtosBuf, HDR_INTENSE_ASCII_CMP, 0x9a00000d); // bls (allow 0..3)
 
-  const tableUpdates: readonly [typeof STYLE_TABLES[number], number][] = [
-    [STYLE_TABLES[0], recVa],
-    [STYLE_TABLES[1], STD_MA_DESC_VA],
-    [STYLE_TABLES[2], gamDescVa],
-  ];
-  for (const [[tName, nativeBase, strideSite, loSite, hiSite], targetVal] of tableUpdates) {
-    for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
-      rtosWriteU32(rtosBuf, nativeBase + 4 * (vIdx * NATIVE_TONES + TARGET_TONE_ID), targetVal);
-    }
-    const strideWord = rtosReadU32(rtosBuf, strideSite);
-    if ((strideWord & 0xffffff00) >>> 0 !== 0xe3a02000) {
-      throw new Error(`${tName}: expected mov r2, #stride at 0x${strideSite.toString(16)}, got 0x${strideWord.toString(16)}`);
-    }
-    const stride = strideWord & 0xff;
-    if (stride < NATIVE_TONES) {
-      throw new Error(`${tName}: unexpected table stride ${stride}`);
-    }
-    const activeBase = decodeMovwMovt(rtosReadU32(rtosBuf, loSite), rtosReadU32(rtosBuf, hiSite), 3, tName);
-    if (activeBase !== nativeBase) {
+  if (mode === 'calibrated') {
+    const tableUpdates: readonly [typeof STYLE_TABLES[number], number][] = [
+      [STYLE_TABLES[0], recVa],
+      [STYLE_TABLES[1], STOCK_NEUTRAL_MA_DESC_VA],
+      [STYLE_TABLES[2], gamDescVa],
+    ];
+    for (const [[tName, nativeBase, strideSite, loSite, hiSite], targetVal] of tableUpdates) {
       for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
-        rtosWriteU32(rtosBuf, activeBase + 4 * (vIdx * stride + TARGET_TONE_ID), targetVal);
+        rtosWriteU32(rtosBuf, nativeBase + 4 * (vIdx * NATIVE_TONES + TARGET_TONE_ID), targetVal);
+      }
+      const strideWord = rtosReadU32(rtosBuf, strideSite);
+      if ((strideWord & 0xffffff00) >>> 0 !== 0xe3a02000) {
+        throw new Error(`${tName}: expected mov r2, #stride at 0x${strideSite.toString(16)}, got 0x${strideWord.toString(16)}`);
+      }
+      const stride = strideWord & 0xff;
+      if (stride < NATIVE_TONES) {
+        throw new Error(`${tName}: unexpected table stride ${stride}`);
+      }
+      const activeBase = decodeMovwMovt(rtosReadU32(rtosBuf, loSite), rtosReadU32(rtosBuf, hiSite), 3, tName);
+      if (activeBase !== nativeBase) {
+        for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
+          rtosWriteU32(rtosBuf, activeBase + 4 * (vIdx * stride + TARGET_TONE_ID), targetVal);
+        }
       }
     }
   }
@@ -754,6 +774,7 @@ export async function patchHlgV121(raw: Uint8Array): Promise<PatchResult> {
 
   return {
     alreadyPatched: false,
+    mode,
     output: built.out,
     outputSha256: await sha256Hex(built.out),
     chosenIconId,
@@ -777,13 +798,25 @@ function printUsage(): void {
     'Ricoh GR IV v1.21 BT.2100 HLG Photo Post-Patcher (Standalone)',
     '',
     'Usage:',
-    '  node gr4_v121_hlg_patcher.mjs <input.bin> [output.bin]',
-    '  node gr4_v121_hlg_patcher.mjs <input.bin> -o <output.bin>',
+    '  node gr4_v121_hlg_patcher.mjs [--mode calibrated|classic] <input.bin> [output.bin]',
+    '  node gr4_v121_hlg_patcher.mjs [--calibrated|--classic] <input.bin> -o <output.bin>',
     '  node gr4_v121_hlg_patcher.mjs --inspect <fw.bin>',
+    '',
+    'Modes:',
+    '  calibrated (default) : BT.2408 Standard-matched Rec.2020 CCM + calibrated HLG LUT',
+    '                         + neutral T_MA + APP2 CICP ICC + Level 0 OFF.',
+    '  classic / --legacy   : Classic v1.11/v1.20 runtime look (leaves T_REC/T_MA/T_GAM',
+    '                         at factory Standard + APP2 CICP ICC + Level 0 OFF).',
     '',
     'Supports BOTH official GR IV v1.21 fwdc248b.bin AND GRMod-built v1.21 firmware',
     '(0.8.15 / 0.8.16 / future releases, with any combination of GRMod features).',
   ].join('\n'));
+}
+
+function parseModeValue(val: string): HlgMode {
+  if (val === 'calibrated') return 'calibrated';
+  if (val === 'classic' || val === 'legacy') return 'classic';
+  throw new Error(`Invalid --mode value "${val}" (expected "calibrated" or "classic").`);
 }
 
 async function runCli(): Promise<number> {
@@ -809,12 +842,13 @@ async function runCli(): Promise<number> {
     console.log(`Relocated style tables  : ${info.hasRelocatedStyleTables}`);
     console.log(`GRMod HDR Gain Map      : ${info.hasHdrGainMap}`);
     const hookDesc = info.hlgHookStatus === 'v111-inverted-bug'
-      ? 'YES [NEEDS FIX: hook=v111-inverted-bug, Write/Rewrite LR polarity inverted]'
+      ? 'YES [NEEDS RE-PATCH: hook=v111-inverted-bug, legacy-bright-hlg]'
       : info.hlgInstalled ? 'YES' : 'NO';
-    console.log(`HLG Photo installed     : ${hookDesc} (hook=${info.hlgHookStatus}, marker=${info.hlgMarkerPresent}, scaleIconId=${info.chosenScaleIconId ?? 'n/a'})`);
+    console.log(`HLG Photo installed     : ${hookDesc} (mode=${info.hlgMode}, hook=${info.hlgHookStatus}, marker=${info.hlgMarkerPresent}, scaleIconId=${info.chosenScaleIconId ?? 'n/a'})`);
     return info.isGr4V121 ? 0 : 1;
   }
 
+  let mode: HlgMode = 'calibrated';
   let inputPath: string | undefined;
   let outputPath: string | undefined;
   for (let i = 0; i < args.length; i++) {
@@ -825,6 +859,22 @@ async function runCli(): Promise<number> {
         console.error('ERROR: -o/--output requires a file path.');
         return 1;
       }
+    } else if (a === '--mode') {
+      const m = args[++i];
+      if (!m) {
+        console.error('ERROR: --mode requires "calibrated" or "classic".');
+        return 1;
+      }
+      mode = parseModeValue(m);
+    } else if (a.startsWith('--mode=')) {
+      mode = parseModeValue(a.slice('--mode='.length));
+    } else if (a === '--calibrated') {
+      mode = 'calibrated';
+    } else if (a === '--classic' || a === '--legacy') {
+      mode = 'classic';
+    } else if (a.startsWith('-')) {
+      console.error(`ERROR: Unknown option: ${a}`);
+      return 1;
     } else if (!inputPath) {
       inputPath = a;
     } else if (!outputPath) {
@@ -852,25 +902,23 @@ async function runCli(): Promise<number> {
   } else {
     const ext = extname(resolvedIn);
     const stem = basename(resolvedIn, ext);
-    resolvedOut = join(dirname(resolvedIn), `${stem}_hlg${ext || '.bin'}`);
+    const suffix = mode === 'classic' ? '_hlg_classic' : '_hlg';
+    resolvedOut = join(dirname(resolvedIn), `${stem}${suffix}${ext || '.bin'}`);
   }
 
   const raw = new Uint8Array(readFileSync(resolvedIn));
-  const res = await patchHlgV121(raw);
+  const res = await patchHlgV121(raw, mode);
 
   if (res.alreadyPatched) {
-    console.log(`[SKIP] HLG Photo is ALREADY installed in ${resolvedIn} (base=${res.baseType}). No changes written.`);
+    console.log(`[SKIP] HLG Photo (${res.mode}) is ALREADY installed in ${resolvedIn} (base=${res.baseType}). No changes written.`);
     return 0;
   }
 
   mkdirSync(dirname(resolvedOut), { recursive: true });
   writeFileSync(resolvedOut, res.output!);
 
-  console.log(
-    res.upgradedInPlace
-      ? '=== GR IV v1.21 BT.2100 HLG Photo Hook Fix [UPGRADED IN-PLACE] ==='
-      : '=== GR IV v1.21 BT.2100 HLG Photo Patch Complete ===',
-  );
+  console.log('=== GR IV v1.21 BT.2100 HLG Photo Patch Complete ===');
+  console.log(`Mode            : ${res.mode === 'calibrated' ? 'calibrated (BT.2408 Standard-matched HLG)' : 'classic (v1.11/v1.20 Standard ISP + HLG ICC)'}`);
   console.log(`Input           : ${resolvedIn} (${res.baseType}${res.hasRelocatedStyleTables ? ', relocated style tables' : ''})`);
   console.log(`Output          : ${resolvedOut} (${res.output!.length.toLocaleString()} bytes)`);
   console.log(`Output SHA-256  : ${res.outputSha256}`);
@@ -880,7 +928,11 @@ async function runCli(): Promise<number> {
   console.log(`APP2 hook       : Write/Rewrite LR bit fixed for v1.21 (ldrne #8 / ldreq #0xc)`);
   console.log(`Frames re-emit  : ${res.reencodedFrames}`);
   console.log(`Self-checks     : ALL PASSED (${Object.keys(res.checks!).length}/${Object.keys(res.checks!).length})`);
-  console.log('Slot 22 behavior: Named "HDR", Rec.2020 + ARIB STD-B67 + CICP ICC, Level 0 = OFF bypass.');
+  console.log(
+    res.mode === 'calibrated'
+      ? 'Slot 22 behavior: Named "HDR", Rec.2020 CCM + BT.2408 calibrated HLG LUT + neutral T_MA + CICP ICC, Level 0 = OFF bypass.'
+      : 'Slot 22 behavior: Named "HDR", factory Standard ISP + CICP ICC (v1.11/v1.20 classic look), Level 0 = OFF bypass.',
+  );
   if (res.hasHdrGainMap) {
     console.log('[NOTE] GRMod HDR Gain Map is also present in this firmware. When shooting HLG in Slot 22, switch OFF [Shooting > HDR] in camera menu.');
   }
