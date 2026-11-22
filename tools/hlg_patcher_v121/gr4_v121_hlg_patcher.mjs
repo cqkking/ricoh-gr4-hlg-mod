@@ -8525,7 +8525,7 @@ function inspectFirmware(raw) {
     chosenScaleIconId
   };
 }
-async function patchHlgV121(raw, mode = "calibrated") {
+async function patchHlgV121(raw) {
   const v = verifyContainer(raw);
   const failedChecks = Object.entries(v.checks).filter(([, ok]) => !ok).map(([k]) => k);
   if (failedChecks.length > 0) {
@@ -8557,10 +8557,9 @@ async function patchHlgV121(raw, mode = "calibrated") {
   const markerInfo = detectMarkerMode(rtosOrig);
   const installedMode = resolveInstalledMode(rtosOrig, hookInfo.status, markerInfo);
   if (hookInfo.status === "v121-fixed") {
-    if (installedMode === mode) {
+    if (installedMode === "calibrated") {
       return {
         alreadyPatched: true,
-        mode,
         baseType,
         hasHdrGainMap,
         hasRelocatedStyleTables,
@@ -8569,12 +8568,12 @@ async function patchHlgV121(raw, mode = "calibrated") {
       };
     }
     throw new Error(
-      `Firmware already has HLG mode "${installedMode}" installed. To switch to "${mode}", please run on a clean official or GRMod v1.21 fwdc248b.bin.`
+      `Firmware already has an older HLG patch ("${installedMode}"). Please run on a clean official or GRMod v1.21 fwdc248b.bin.`
     );
   }
   if (hookInfo.status === "v111-inverted-bug") {
     throw new Error(
-      `Firmware has an older HLG patch (${installedMode}, hook=v111-inverted-bug). Please re-patch from a clean official or GRMod v1.21 fwdc248b.bin using --mode ${mode}.`
+      `Firmware has an older HLG patch (${installedMode}, hook=v111-inverted-bug). Please re-patch from a clean official or GRMod v1.21 fwdc248b.bin.`
     );
   }
   rtosExpectU32(rtosOrig, HOOK_SITE, 3796619284, "SetupAppNInfo epilogue (HOOK_SITE)");
@@ -8724,22 +8723,18 @@ async function patchHlgV121(raw, mode = "calibrated") {
   }
   const scaleDescVa = appendRtos(concatBytes([u16le2([1, 400, 60, 0]), u32le2([oldIconSize / 4])]), 16);
   rtosWriteU32(rtosBuf, iconCatalogVa + chosenIconId * 4, scaleDescVa);
-  let recVa = 0;
-  let gamDescVa = 0;
-  if (mode === "calibrated") {
-    const curveVa = appendRtos(buildCalibratedHlgCurveV121(), 256);
-    gamDescVa = appendRtos(u32le2([GAMMA_DESC_WORD0, 1, curveVa, curveVa, curveVa]), 4);
-    const matrixVa = appendRtos(HLG_MATRIX, 4);
-    const stdRec = rtosReadBytes(rtosBuf, STD_REC_VA, 84);
-    const recBytes = new Uint8Array(stdRec);
-    writeU32(recBytes, 4, matrixVa);
-    recVa = appendRtos(recBytes, 4);
-  }
+  const curveVa = appendRtos(buildCalibratedHlgCurveV121(), 256);
+  const gamDescVa = appendRtos(u32le2([GAMMA_DESC_WORD0, 1, curveVa, curveVa, curveVa]), 4);
+  const matrixVa = appendRtos(HLG_MATRIX, 4);
+  const stdRec = rtosReadBytes(rtosBuf, STD_REC_VA, 84);
+  const recBytes = new Uint8Array(stdRec);
+  writeU32(recBytes, 4, matrixVa);
+  const recVa = appendRtos(recBytes, 4);
   const hdrUtf16 = new Uint8Array([72, 0, 68, 0, 82, 0, 0, 0]);
   const textVa = appendRtos(hdrUtf16, 4);
   const textDescVa = appendRtos(concatBytes([Uint8Array.from([4, 1, 0, 0]), u32le2([textVa])]), 4);
   const hookVa = appendRtos(buildV121HookBlock(), 16);
-  rtosBuf.set(mode === "calibrated" ? HLG_MARKER_CALIBRATED : HLG_MARKER_CLASSIC, newRtosSize - 16);
+  rtosBuf.set(HLG_MARKER_CALIBRATED, newRtosSize - 16);
   rtosWriteU32(rtosBuf, HOOK_SITE, branchWord(HOOK_SITE, hookVa));
   rtosWriteU32(rtosBuf, HDR_SCALE_SHOOTING, movWord(3, chosenIconId));
   rtosWriteU32(rtosBuf, HDR_SCALE_RAW, movWord(3, chosenIconId));
@@ -8747,29 +8742,27 @@ async function patchHlgV121(raw, mode = "calibrated") {
     rtosWriteU32(rtosBuf, tbl, 131328);
   }
   rtosWriteU32(rtosBuf, HDR_INTENSE_ASCII_CMP, 2583691277);
-  if (mode === "calibrated") {
-    const tableUpdates = [
-      [STYLE_TABLES[0], recVa],
-      [STYLE_TABLES[1], STOCK_NEUTRAL_MA_DESC_VA],
-      [STYLE_TABLES[2], gamDescVa]
-    ];
-    for (const [[tName, nativeBase, strideSite, loSite, hiSite], targetVal] of tableUpdates) {
+  const tableUpdates = [
+    [STYLE_TABLES[0], recVa],
+    [STYLE_TABLES[1], STOCK_NEUTRAL_MA_DESC_VA],
+    [STYLE_TABLES[2], gamDescVa]
+  ];
+  for (const [[tName, nativeBase, strideSite, loSite, hiSite], targetVal] of tableUpdates) {
+    for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
+      rtosWriteU32(rtosBuf, nativeBase + 4 * (vIdx * NATIVE_TONES + TARGET_TONE_ID), targetVal);
+    }
+    const strideWord = rtosReadU32(rtosBuf, strideSite);
+    if ((strideWord & 4294967040) >>> 0 !== 3818921984) {
+      throw new Error(`${tName}: expected mov r2, #stride at 0x${strideSite.toString(16)}, got 0x${strideWord.toString(16)}`);
+    }
+    const stride = strideWord & 255;
+    if (stride < NATIVE_TONES) {
+      throw new Error(`${tName}: unexpected table stride ${stride}`);
+    }
+    const activeBase = decodeMovwMovt(rtosReadU32(rtosBuf, loSite), rtosReadU32(rtosBuf, hiSite), 3, tName);
+    if (activeBase !== nativeBase) {
       for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
-        rtosWriteU32(rtosBuf, nativeBase + 4 * (vIdx * NATIVE_TONES + TARGET_TONE_ID), targetVal);
-      }
-      const strideWord = rtosReadU32(rtosBuf, strideSite);
-      if ((strideWord & 4294967040) >>> 0 !== 3818921984) {
-        throw new Error(`${tName}: expected mov r2, #stride at 0x${strideSite.toString(16)}, got 0x${strideWord.toString(16)}`);
-      }
-      const stride = strideWord & 255;
-      if (stride < NATIVE_TONES) {
-        throw new Error(`${tName}: unexpected table stride ${stride}`);
-      }
-      const activeBase = decodeMovwMovt(rtosReadU32(rtosBuf, loSite), rtosReadU32(rtosBuf, hiSite), 3, tName);
-      if (activeBase !== nativeBase) {
-        for (let vIdx = 0; vIdx < VARIANTS; vIdx++) {
-          rtosWriteU32(rtosBuf, activeBase + 4 * (vIdx * stride + TARGET_TONE_ID), targetVal);
-        }
+        rtosWriteU32(rtosBuf, activeBase + 4 * (vIdx * stride + TARGET_TONE_ID), targetVal);
       }
     }
   }
@@ -8831,7 +8824,6 @@ async function patchHlgV121(raw, mode = "calibrated") {
   }
   return {
     alreadyPatched: false,
-    mode,
     output: built.out,
     outputSha256: await sha256Hex(built.out),
     chosenIconId,
@@ -8851,24 +8843,16 @@ function printUsage() {
     "Ricoh GR IV v1.21 BT.2100 HLG Photo Post-Patcher (Standalone)",
     "",
     "Usage:",
-    "  node gr4_v121_hlg_patcher.mjs [--mode calibrated|classic] <input.bin> [output.bin]",
-    "  node gr4_v121_hlg_patcher.mjs [--calibrated|--classic] <input.bin> -o <output.bin>",
+    "  node gr4_v121_hlg_patcher.mjs <input.bin> [output.bin]",
+    "  node gr4_v121_hlg_patcher.mjs <input.bin> -o <output.bin>",
     "  node gr4_v121_hlg_patcher.mjs --inspect <fw.bin>",
     "",
-    "Modes:",
-    "  calibrated (default) : BT.2408 Standard-matched Rec.2020 CCM + calibrated HLG LUT",
-    "                         + neutral T_MA + APP2 CICP ICC + Level 0 OFF.",
-    "  classic / --legacy   : Classic v1.11/v1.20 runtime look (leaves T_REC/T_MA/T_GAM",
-    "                         at factory Standard + APP2 CICP ICC + Level 0 OFF).",
+    "Applies BT.2408 Standard-matched Rec.2020 CCM + calibrated 14-bit HLG LUT",
+    "+ neutral T_MA + fixed v1.21 APP2 CICP ICC + Level 0 OFF.",
     "",
     "Supports BOTH official GR IV v1.21 fwdc248b.bin AND GRMod-built v1.21 firmware",
     "(0.8.15 / 0.8.16 / future releases, with any combination of GRMod features)."
   ].join("\n"));
-}
-function parseModeValue(val) {
-  if (val === "calibrated") return "calibrated";
-  if (val === "classic" || val === "legacy") return "classic";
-  throw new Error(`Invalid --mode value "${val}" (expected "calibrated" or "classic").`);
 }
 async function runCli() {
   const args = process.argv.slice(2);
@@ -8895,7 +8879,6 @@ async function runCli() {
     console.log(`HLG Photo installed     : ${hookDesc} (mode=${info.hlgMode}, hook=${info.hlgHookStatus}, marker=${info.hlgMarkerPresent}, scaleIconId=${info.chosenScaleIconId ?? "n/a"})`);
     return info.isGr4V121 ? 0 : 1;
   }
-  let mode = "calibrated";
   let inputPath;
   let outputPath;
   for (let i = 0; i < args.length; i++) {
@@ -8906,19 +8889,6 @@ async function runCli() {
         console.error("ERROR: -o/--output requires a file path.");
         return 1;
       }
-    } else if (a === "--mode") {
-      const m = args[++i];
-      if (!m) {
-        console.error('ERROR: --mode requires "calibrated" or "classic".');
-        return 1;
-      }
-      mode = parseModeValue(m);
-    } else if (a.startsWith("--mode=")) {
-      mode = parseModeValue(a.slice("--mode=".length));
-    } else if (a === "--calibrated") {
-      mode = "calibrated";
-    } else if (a === "--classic" || a === "--legacy") {
-      mode = "classic";
     } else if (a.startsWith("-")) {
       console.error(`ERROR: Unknown option: ${a}`);
       return 1;
@@ -8946,19 +8916,18 @@ async function runCli() {
   } else {
     const ext = extname(resolvedIn);
     const stem = basename(resolvedIn, ext);
-    const suffix = mode === "classic" ? "_hlg_classic" : "_hlg";
-    resolvedOut = join2(dirname(resolvedIn), `${stem}${suffix}${ext || ".bin"}`);
+    resolvedOut = join2(dirname(resolvedIn), `${stem}_hlg${ext || ".bin"}`);
   }
   const raw = new Uint8Array(readFileSync(resolvedIn));
-  const res = await patchHlgV121(raw, mode);
+  const res = await patchHlgV121(raw);
   if (res.alreadyPatched) {
-    console.log(`[SKIP] HLG Photo (${res.mode}) is ALREADY installed in ${resolvedIn} (base=${res.baseType}). No changes written.`);
+    console.log(`[SKIP] HLG Photo (calibrated) is ALREADY installed in ${resolvedIn} (base=${res.baseType}). No changes written.`);
     return 0;
   }
   mkdirSync(dirname(resolvedOut), { recursive: true });
   writeFileSync(resolvedOut, res.output);
   console.log("=== GR IV v1.21 BT.2100 HLG Photo Patch Complete ===");
-  console.log(`Mode            : ${res.mode === "calibrated" ? "calibrated (BT.2408 Standard-matched HLG)" : "classic (v1.11/v1.20 Standard ISP + HLG ICC)"}`);
+  console.log(`Profile         : BT.2408 Standard-matched HLG (calibrated)`);
   console.log(`Input           : ${resolvedIn} (${res.baseType}${res.hasRelocatedStyleTables ? ", relocated style tables" : ""})`);
   console.log(`Output          : ${resolvedOut} (${res.output.length.toLocaleString()} bytes)`);
   console.log(`Output SHA-256  : ${res.outputSha256}`);
@@ -8968,9 +8937,7 @@ async function runCli() {
   console.log(`APP2 hook       : Write/Rewrite LR bit fixed for v1.21 (ldrne #8 / ldreq #0xc)`);
   console.log(`Frames re-emit  : ${res.reencodedFrames}`);
   console.log(`Self-checks     : ALL PASSED (${Object.keys(res.checks).length}/${Object.keys(res.checks).length})`);
-  console.log(
-    res.mode === "calibrated" ? 'Slot 22 behavior: Named "HDR", Rec.2020 CCM + BT.2408 calibrated HLG LUT + neutral T_MA + CICP ICC, Level 0 = OFF bypass.' : 'Slot 22 behavior: Named "HDR", factory Standard ISP + CICP ICC (v1.11/v1.20 classic look), Level 0 = OFF bypass.'
-  );
+  console.log('Slot 22 behavior: Named "HDR", Rec.2020 CCM + BT.2408 calibrated HLG LUT + neutral T_MA + CICP ICC, Level 0 = OFF bypass.');
   if (res.hasHdrGainMap) {
     console.log("[NOTE] GRMod HDR Gain Map is also present in this firmware. When shooting HLG in Slot 22, switch OFF [Shooting > HDR] in camera menu.");
   }
